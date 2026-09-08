@@ -212,7 +212,14 @@ fn scan() -> Value {
             let key = format!("{}|{}", acct, org);
             let tr = transcripts_for(&rec);
             let bytes: u64 = tr.iter().map(|t| t["size"].as_u64().unwrap_or(0) + t["subBytes"].as_u64().unwrap_or(0)).sum();
-            let missing = tr.iter().filter(|t| !t["exists"].as_bool().unwrap_or(false)).count();
+            // Only warn when the chat's OWN transcript is gone. bridgeSessionIds can
+            // name sessions that never had a transcript file of their own, and those
+            // must not make a perfectly readable chat look pruned.
+            let missing = match tr.first() {
+                Some(t) if !t["exists"].as_bool().unwrap_or(false) => 1,
+                _ => 0,
+            };
+            let absent = tr.iter().filter(|t| !t["exists"].as_bool().unwrap_or(false)).count();
             let subs: u64 = tr.iter().map(|t| t["subagents"].as_u64().unwrap_or(0)).sum();
             let entry = json!({
                 "id": rec["sessionId"], "title": rec["title"].as_str().unwrap_or("(untitled)"),
@@ -220,7 +227,8 @@ fn scan() -> Value {
                 "created": rec["createdAt"], "last": rec["lastActivityAt"],
                 "turns": rec["completedTurns"], "archived": rec["isArchived"],
                 "forkedFrom": rec["forkedFromSessionId"],
-                "files": tr.len(), "subs": subs, "bytes": bytes, "missing": missing,
+                "files": tr.len(), "subs": subs, "bytes": bytes,
+                "missing": missing, "absent": absent,
                 "path": p.to_string_lossy()
             });
             scopes.get_mut(&key).unwrap()["chats"].as_array_mut().unwrap().push(entry);

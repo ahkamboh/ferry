@@ -167,7 +167,9 @@ def scan():
             "turns": rec.get("completedTurns"), "archived": bool(rec.get("isArchived")),
             "forkedFrom": rec.get("forkedFromSessionId"),
             "files": len(tr), "bytes": sum(t["size"]+sum(x["size"] for x in t["subagents"]) for t in tr),
-            "missing": sum(1 for t in tr if not t["exists"]), "path": f})
+            # only the chat's own transcript counts; bridge ids may have none
+            "missing": 1 if (tr and not tr[0]["exists"]) else 0,
+            "absent": sum(1 for t in tr if not t["exists"]), "path": f})
         for m in (rec.get("remoteMcpServersConfig") or []):
             if isinstance(m,dict) and m.get("name"):
                 s["connectors"][m["name"]] = s["connectors"].get(m["name"],0)+1
