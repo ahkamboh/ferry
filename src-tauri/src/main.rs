@@ -7,10 +7,19 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "windows")]
 fn home() -> String {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default()
+}
+#[cfg(not(target_os = "windows"))]
+fn home() -> String { std::env::var("HOME").unwrap_or_default() }
+
+/// Compare by path components, never by string prefix: on Windows these paths
+/// mix "/" and "\" depending on whether they came from a format! or from glob.
+fn under(root: &str, p: &str) -> bool {
+    Path::new(p).starts_with(Path::new(root))
 }
 
 /// Where the desktop app keeps its per-account state.
@@ -252,7 +261,8 @@ fn scan() -> Value {
     list.sort_by_key(|s| std::cmp::Reverse(
         s["chats"].as_array().unwrap().iter().map(|c| c["last"].as_u64().unwrap_or(0)).max().unwrap_or(0)));
     json!({ "scopes": list, "current": cur, "appRunning": app_running(),
-            "vault": vault(), "exportDir": last_export_dir() })
+            "vault": vault(), "exportDir": last_export_dir(),
+            "paths": { "sessions": sess(), "projects": proj(), "home": home() } })
 }
 
 /// Walk every transcript that belongs to one chat, oldest session first.
@@ -308,7 +318,9 @@ fn collect_msgs(tr: &[Value], cap: usize, per_msg: usize) -> Vec<Value> {
 
 #[tauri::command]
 fn chat_detail(path: String) -> Result<Value, String> {
-    if !path.starts_with(&sess()) { return Err("bad path".into()); }
+    if !under(&sess(), &path) {
+        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
+    }
     let rec = read_json(&path).ok_or("chat unreadable")?;
     let tr = transcripts_for(&rec);
     let msgs = collect_msgs(&tr, 800, 24000);
@@ -328,7 +340,9 @@ fn slug(s: &str) -> String {
 /// Save the whole conversation to ~/Downloads as Markdown, JSON, or plain text.
 #[tauri::command]
 async fn export_chat(app: tauri::AppHandle, path: String, fmt: String, ask: bool) -> Result<Value, String> {
-    if !path.starts_with(&sess()) { return Err("bad path".into()); }
+    if !under(&sess(), &path) {
+        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
+    }
     let rec = read_json(&path).ok_or("chat unreadable")?;
     let tr  = transcripts_for(&rec);
     let msgs = collect_msgs(&tr, 100_000, 2_000_000);
@@ -414,7 +428,9 @@ async fn export_chat(app: tauri::AppHandle, path: String, fmt: String, ask: bool
 #[tauri::command]
 fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<Value, String> {
     guard()?;
-    if !path.starts_with(&sess()) { return Err("bad path".into()); }
+    if !under(&sess(), &path) {
+        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
+    }
     let rec = read_json(&path).ok_or("source unreadable")?;
     let sid = rec["sessionId"].as_str().ok_or("no sessionId")?.to_string();
     let short = sid.trim_start_matches("local_").to_string();
@@ -442,7 +458,9 @@ fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<Value,
 #[tauri::command]
 fn rename_chat(path: String, title: String) -> Result<Value, String> {
     guard()?;
-    if !path.starts_with(&sess()) { return Err("bad path".into()); }
+    if !under(&sess(), &path) {
+        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
+    }
     let mut rec = read_json(&path).ok_or("chat unreadable")?;
     snapshot(&path, "rename");
     let t = if title.trim().is_empty() { "(untitled)".to_string() } else { title.trim().to_string() };
@@ -454,7 +472,9 @@ fn rename_chat(path: String, title: String) -> Result<Value, String> {
 #[tauri::command]
 async fn delete_chat(app: tauri::AppHandle, path: String) -> Result<Value, String> {
     guard()?;
-    if !path.starts_with(&sess()) { return Err("bad path".into()); }
+    if !under(&sess(), &path) {
+        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
+    }
     let rec = read_json(&path).ok_or("chat unreadable")?;
 
     {

@@ -13,7 +13,8 @@ import json, os, re, shutil, sys, glob, subprocess, threading, webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-HOME  = os.path.expanduser("~")
+HOME  = (os.environ.get("USERPROFILE") or os.path.expanduser("~")) \
+        if sys.platform == "win32" else os.path.expanduser("~")
 if sys.platform == "win32":
     CLAUDE = os.path.join(os.environ.get("APPDATA",
                           os.path.join(HOME, "AppData", "Roaming")), "Claude")
@@ -32,6 +33,12 @@ PORT  = 7777
 
 # account-scoped fields that must NOT follow a chat into another account
 ACCOUNT_SCOPED = ("remoteMcpServersConfig", "enabledMcpTools")
+
+def under(root, p):
+    """Windows mixes / and \\ depending on the source, so normalise both ends."""
+    a = os.path.normcase(os.path.normpath(root))
+    b = os.path.normcase(os.path.normpath(p))
+    return b == a or b.startswith(a + os.sep)
 
 def enc_cwd(p):
     """Current rule, taken from the shipped CLI: every non-alphanumeric -> '-'."""
@@ -382,8 +389,8 @@ class H(BaseHTTPRequestHandler):
         fn = OPS.get(cmd)
         if not fn: return self._send({"__error": f"unknown command {cmd!r}"}, 400)
         for key in ("path",):
-            if args.get(key) and not str(args[key]).startswith(SESS):
-                return self._send({"__error": "bad path"}, 400)
+            if args.get(key) and not under(SESS, str(args[key])):
+                return self._send({"__error": f"path is outside the sessions folder\n  path: {args[key]}\n  root: {SESS}"}, 400)
         try:
             return self._send(fn(**args))
         except TypeError as e:

@@ -240,7 +240,7 @@ function drawSide(){
       '</div></div>';}).join("")
    +(s0?'<div class=secl>rename</div><div style="padding:0 9px"><input id=nick placeholder="name this account" value="'+
       esc(s0.label||'')+'" onchange="setLabel(\''+s0.acct+'\',this.value)"></div>':'')
-   +'<div class=foot>'+S.scopes.length+' accounts · '+
+   +'<div class=foot title="'+esc('sessions: '+((S.paths||{}).sessions||'?')+String.fromCharCode(10)+'projects: '+((S.paths||{}).projects||'?'))+'">'+S.scopes.length+' accounts · '+
       S.scopes.reduce((a,x)=>a+x.chats.length,0)+' chats · '+
       S.scopes.reduce((a,x)=>a+x.deleted.length,0)+' deleted</div>';
   document.querySelectorAll(".acct").forEach(el=>{
