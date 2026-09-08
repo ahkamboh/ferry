@@ -5,7 +5,7 @@
 <h1>
   Ferry
   <a href="https://github.com/ahkamboh/ferry/releases/latest" title="Download the latest release">
-    <img src="assets/download.png" width="28" align="top" alt="Download">
+    <img src="assets/download.png" width="24" alt="Download">
   </a>
 </h1>
 
