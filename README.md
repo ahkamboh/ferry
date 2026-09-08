@@ -2,11 +2,18 @@
 
 <img src="assets/logo-160.png" width="112" alt="Ferry logo">
 
-# Ferry
+<h1>
+  Ferry
+  <a href="https://github.com/ahkamboh/ferry/releases/latest" title="Download the latest release">
+    <img src="assets/download.png" width="28" align="top" alt="Download">
+  </a>
+</h1>
 
 **Move, copy and back up your Claude Code chats across multiple local accounts.**
 
 A 4 MB native Mac app (and a zero-dependency CLI) for the chat history Claude Code keeps on your machine.
+
+[![Download for macOS](https://img.shields.io/badge/%E2%86%93%20Download-macOS%20universal-d97757?style=for-the-badge)](https://github.com/ahkamboh/ferry/releases/latest)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-d97757.svg)](LICENSE)
 ![Platform: macOS 11+](https://img.shields.io/badge/platform-macOS%2011%2B-1f1e1d)
