@@ -9,9 +9,9 @@
   </a>
 </h1>
 
-**Move, copy and back up your Claude Code chats across multiple local accounts.**
+**Copy or move a chat from a Claude Code account you're signed out of into the one you're using now.**
 
-A 4 MB native app for macOS and Windows, plus a zero-dependency CLI, for the chat history Claude Code keeps on your machine.
+Claude picks up the old context instead of you explaining the project again — all on your machine. A 4 MB native app for macOS and Windows, plus a zero-dependency CLI.
 
 [![Download](https://img.shields.io/badge/%E2%86%93%20Download-macOS%20%7C%20Windows-d97757?style=for-the-badge)](https://github.com/ahkamboh/ferry/releases/latest)
 [![Website](https://img.shields.io/badge/Website-ahkamboh.github.io%2Fferry-1f1e1d?style=for-the-badge)](https://ahkamboh.github.io/ferry/)
