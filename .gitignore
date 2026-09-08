@@ -1,0 +1,12 @@
+# rust build output
+src-tauri/target/
+src-tauri/gen/
+
+# generated icon intermediates (icon.png + icon.icns are committed)
+src-tauri/icons/icon.iconset/
+
+# macOS
+.DS_Store
+
+# local scratch
+*.log
