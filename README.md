@@ -158,7 +158,11 @@ Its transcript was pruned by Claude Code's cleanup. The record survives, the con
 No. Ferry has no network code. It reads and writes local files only.
 
 **Does it work on Windows or Linux?**
-Not yet — the paths and the bundle are macOS-specific. The layout is the same idea elsewhere, so a port is mostly path handling.
+Only macOS is built and tested. Windows path handling is already in the code — the layout
+there is `%APPDATA%\Claude\claude-code-sessions` with transcripts in `%USERPROFILE%\.claude\projects`
+— but no Windows binary is published and nobody has run it end to end. On Linux there is no
+Claude Code desktop app, so there are no per-account chat records to move; only the archive
+half would apply.
 
 **Is it affiliated with Anthropic?**
 No. Ferry is an independent tool that reads local files written by Claude Code.

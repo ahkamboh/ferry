@@ -14,10 +14,17 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HOME  = os.path.expanduser("~")
-SESS  = f"{HOME}/Library/Application Support/Claude/claude-code-sessions"
+if sys.platform == "win32":
+    CLAUDE = os.path.join(os.environ.get("APPDATA",
+                          os.path.join(HOME, "AppData", "Roaming")), "Claude")
+elif sys.platform == "darwin":
+    CLAUDE = f"{HOME}/Library/Application Support/Claude"
+else:
+    CLAUDE = f"{HOME}/.config/Claude"
+SESS  = f"{CLAUDE}/claude-code-sessions"
 PROJ  = f"{HOME}/.claude/projects"
-CFG   = f"{HOME}/Library/Application Support/Claude/config.json"
-IDB   = f"{HOME}/Library/Application Support/Claude/IndexedDB"
+CFG   = f"{CLAUDE}/config.json"
+IDB   = f"{CLAUDE}/IndexedDB"
 VAULT = f"{HOME}/.ferry"
 LABELS= f"{VAULT}/labels.json"
 PREFS = f"{VAULT}/prefs.json"
@@ -26,13 +33,41 @@ PORT  = 7777
 # account-scoped fields that must NOT follow a chat into another account
 ACCOUNT_SCOPED = ("remoteMcpServersConfig", "enabledMcpTools")
 
-def enc_cwd(p): return re.sub(r"[/._]", "-", p)
+def enc_cwd(p):
+    """Current rule, taken from the shipped CLI: every non-alphanumeric -> '-'."""
+    return re.sub(r"[^a-zA-Z0-9]", "-", p)
+
+def enc_cwd_legacy(p):
+    """Older builds replaced only the separators and kept dots."""
+    return re.sub(r"[/\\]", "-", p)
+
+def project_dir(cwd):
+    """Folders from different Claude Code versions coexist; long paths get
+    truncated with a -<hash> suffix. Try each shape before giving up."""
+    cur = enc_cwd(cwd)
+    for cand in (cur, enc_cwd_legacy(cwd)):
+        d = os.path.join(PROJ, cand)
+        if os.path.isdir(d): return d
+    try:
+        for name in os.listdir(PROJ):
+            prefix = name.rsplit("-", 1)[0]
+            if len(prefix) >= 24 and cur.startswith(prefix):
+                return os.path.join(PROJ, name)
+    except Exception: pass
+    return os.path.join(PROJ, cur)
 def ts(ms):
     try: return datetime.fromtimestamp(ms/1000).strftime("%Y-%m-%d %H:%M")
     except Exception: return "?"
 
 def app_running():
     try:
+        if sys.platform == "win32":
+            # both the app and the CLI are claude.exe, so match the install path
+            out = subprocess.run(["powershell","-NoProfile","-Command",
+                "(Get-Process -Name Claude -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.Path -like '*WindowsApps*' }).Count"],
+                capture_output=True, text=True).stdout.strip()
+            return out.isdigit() and int(out) > 0
         out = subprocess.run(["pgrep","-f","Claude.app/Contents/MacOS/Claude"],
                              capture_output=True, text=True).stdout.strip()
         return bool(out)
@@ -90,8 +125,11 @@ def read_rec(path):
 def transcripts_for(rec):
     """Every transcript file that makes up one chat: current + prior + subagents."""
     cwd = rec.get("cwd","")
-    d   = f"{PROJ}/{enc_cwd(cwd)}"
-    ids = [rec.get("cliSessionId")] + list(rec.get("priorCliSessionIds") or [])
+    d   = project_dir(cwd)
+    ids = [rec.get("cliSessionId")]
+    for key in ("priorCliSessionIds", "bridgeSessionIds"):   # key renamed between builds
+        for x in (rec.get(key) or []):
+            if x not in ids: ids.append(x)
     out = []
     for i in [x for x in ids if x]:
         main = f"{d}/{i}.jsonl"

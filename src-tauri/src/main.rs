@@ -7,11 +7,28 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn home() -> String { std::env::var("HOME").unwrap_or_default() }
-fn sess()  -> String { format!("{}/Library/Application Support/Claude/claude-code-sessions", home()) }
+fn home() -> String {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default()
+}
+
+/// Where the desktop app keeps its per-account state.
+#[cfg(target_os = "macos")]
+fn claude_dir() -> String { format!("{}/Library/Application Support/Claude", home()) }
+#[cfg(target_os = "windows")]
+fn claude_dir() -> String {
+    std::env::var("APPDATA")
+        .map(|a| format!("{}\\Claude", a))
+        .unwrap_or_else(|_| format!("{}/AppData/Roaming/Claude", home()))
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn claude_dir() -> String { format!("{}/.config/Claude", home()) }
+
+fn sess()  -> String { format!("{}/claude-code-sessions", claude_dir()) }
+fn cfg()   -> String { format!("{}/config.json", claude_dir()) }
+fn idb()   -> String { format!("{}/IndexedDB", claude_dir()) }
 fn proj()  -> String { format!("{}/.claude/projects", home()) }
-fn cfg()   -> String { format!("{}/Library/Application Support/Claude/config.json", home()) }
-fn idb()   -> String { format!("{}/Library/Application Support/Claude/IndexedDB", home()) }
 fn vault() -> String { format!("{}/.ferry", home()) }
 
 /// Connector uuids and tool grants belong to the account that created them.
@@ -27,16 +44,60 @@ fn stamp() -> String {
     out.ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
        .filter(|s| !s.is_empty()).unwrap_or_else(|| secs.to_string())
 }
+/// Current Claude Code rule, read out of the shipped CLI:
+/// every character that is not [a-zA-Z0-9] becomes '-', runs are NOT collapsed.
 fn enc_cwd(p: &str) -> String {
-    p.chars().map(|c| if c=='/'||c=='.'||c=='_' { '-' } else { c }).collect()
+    p.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+/// Older builds only replaced the separators and left dots alone.
+fn enc_cwd_legacy(p: &str) -> String {
+    p.chars().map(|c| if c=='/' || c=='\\' { '-' } else { c }).collect()
+}
+
+/// Resolve a chat's working directory to its transcript folder.
+/// Folders written by different Claude Code versions coexist on disk, and very
+/// long paths are truncated with a "-<hash>" suffix, so try each in turn.
+fn project_dir(cwd: &str) -> String {
+    let root = proj();
+    let current = enc_cwd(cwd);
+    for cand in [&current, &enc_cwd_legacy(cwd)] {
+        let d = format!("{}/{}", root, cand);
+        if Path::new(&d).is_dir() { return d; }
+    }
+    // truncated long path: "<prefix>-<base36 hash>"
+    if let Ok(rd) = fs::read_dir(&root) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if let Some((prefix, _hash)) = name.rsplit_once('-') {
+                if prefix.len() >= 24 && current.starts_with(prefix) {
+                    return format!("{}/{}", root, name);
+                }
+            }
+        }
+    }
+    format!("{}/{}", root, current)
 }
 fn read_json(p: &str) -> Option<Value> {
     fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok())
 }
+#[cfg(target_os = "macos")]
 fn app_running() -> bool {
     Command::new("pgrep").args(["-f", "Claude.app/Contents/MacOS/Claude"])
         .output().map(|o| !o.stdout.is_empty()).unwrap_or(false)
 }
+/// On Windows both the desktop app and the bundled CLI are called claude.exe,
+/// so match on the install path instead of the image name.
+#[cfg(target_os = "windows")]
+fn app_running() -> bool {
+    Command::new("powershell")
+        .args(["-NoProfile", "-Command",
+               "(Get-Process -Name Claude -ErrorAction SilentlyContinue |                 Where-Object { $_.Path -like '*WindowsApps*' }).Count"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().unwrap_or(0) > 0)
+        .unwrap_or(false)
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn app_running() -> bool { false }
 fn guard() -> Result<(), String> {
     if app_running() { Err("Claude desktop is running. Quit it first, then retry.".into()) }
     else { Ok(()) }
@@ -87,11 +148,18 @@ fn profiles() -> Value {
 /// Every transcript that makes up one chat: current + prior sessions + their subagents.
 fn transcripts_for(rec: &Value) -> Vec<Value> {
     let cwd = rec["cwd"].as_str().unwrap_or("");
-    let dir = format!("{}/{}", proj(), enc_cwd(cwd));
+    let dir = project_dir(cwd);
     let mut ids: Vec<String> = vec![];
     if let Some(s) = rec["cliSessionId"].as_str() { ids.push(s.into()); }
-    if let Some(a) = rec["priorCliSessionIds"].as_array() {
-        for v in a { if let Some(s) = v.as_str() { ids.push(s.into()); } }
+    // older builds: priorCliSessionIds. newer / Windows builds: bridgeSessionIds.
+    for key in ["priorCliSessionIds", "bridgeSessionIds"] {
+        if let Some(a) = rec[key].as_array() {
+            for v in a {
+                if let Some(x) = v.as_str() {
+                    if !ids.iter().any(|e| e == x) { ids.push(x.into()); }
+                }
+            }
+        }
     }
     ids.iter().map(|id| {
         let main = format!("{}/{}.jsonl", dir, id);
