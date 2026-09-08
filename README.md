@@ -77,10 +77,20 @@ open ~/Applications/Ferry.app
 ```bash
 python3 ferry-cli.py list                     # every account and its chats
 python3 ferry-cli.py vault                    # archive everything to ~/.ferry
-python3 ferry-cli.py export "auth refactor"   # save a chat to ~/Downloads
+python3 ferry-cli.py export "auth refactor"   # save a chat, Markdown by default
 python3 ferry-cli.py export "auth refactor" json
-python3 ferry-cli.py ui                       # browser UI on localhost:7777
+python3 ferry-cli.py export 1191f0ec txt      # disambiguate by session id
+python3 ferry-cli.py ui                       # serve the app UI at localhost:7777
 ```
+
+`export` matches on chat title or session id. If a title matches more than one chat it lists
+the candidates with their ids instead of guessing. Files go to the folder you last downloaded
+to, `~/Downloads` until you pick another.
+
+`ui` serves the **same interface as the desktop app** — the app's `dist/index.html` with a shim
+that turns its `invoke()` calls into HTTP. Markdown rendering, drag-and-drop and the archive all
+work there; the only difference is the browser can't open a native save panel, so downloads go
+straight to your chosen folder.
 
 Run `vault` from a launchd job or cron and your history is backed up nightly without opening anything.
 
