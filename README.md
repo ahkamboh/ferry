@@ -59,6 +59,22 @@ Because transcripts are account-agnostic, moving a chat only moves about **10 KB
 
 ## Install
 
+### Download the app
+
+Grab `Ferry-<version>-macos-universal.zip` from
+[Releases](https://github.com/ahkamboh/ferry/releases), unzip it, and drag `Ferry.app`
+to your Applications folder. Universal binary — Apple Silicon and Intel.
+
+**First launch:** the app is ad-hoc signed, not notarised, so macOS will refuse a plain
+double-click. **Right-click the app → Open → Open.** You only do this once. If macOS still
+blocks it:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Ferry.app
+```
+
+### Or build it yourself
+
 Requires macOS 11+ and [Rust](https://rustup.rs).
 
 ```bash
