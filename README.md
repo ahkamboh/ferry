@@ -11,12 +11,12 @@
 
 **Move, copy and back up your Claude Code chats across multiple local accounts.**
 
-A 4 MB native Mac app (and a zero-dependency CLI) for the chat history Claude Code keeps on your machine.
+A 4 MB native app for macOS and Windows, plus a zero-dependency CLI, for the chat history Claude Code keeps on your machine.
 
-[![Download for macOS](https://img.shields.io/badge/%E2%86%93%20Download-macOS%20universal-d97757?style=for-the-badge)](https://github.com/ahkamboh/ferry/releases/latest)
+[![Download](https://img.shields.io/badge/%E2%86%93%20Download-macOS%20%7C%20Windows-d97757?style=for-the-badge)](https://github.com/ahkamboh/ferry/releases/latest)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-d97757.svg)](LICENSE)
-![Platform: macOS 11+](https://img.shields.io/badge/platform-macOS%2011%2B-1f1e1d)
+![Platform: macOS and Windows](https://img.shields.io/badge/platform-macOS%2011%2B%20%7C%20Windows%2010%2B-1f1e1d)
 ![Size: 4 MB](https://img.shields.io/badge/app-4%20MB-1f1e1d)
 ![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202%20%2B%20Rust-1f1e1d)
 
@@ -68,21 +68,30 @@ Because transcripts are account-agnostic, moving a chat only moves about **10 KB
 
 ### Download the app
 
-Grab `Ferry-<version>-macos-universal.zip` from
-[Releases](https://github.com/ahkamboh/ferry/releases), unzip it, and drag `Ferry.app`
-to your Applications folder. Universal binary — Apple Silicon and Intel.
+From [Releases](https://github.com/ahkamboh/ferry/releases/latest):
 
-**First launch:** the app is ad-hoc signed, not notarised, so macOS will refuse a plain
-double-click. **Right-click the app → Open → Open.** You only do this once. If macOS still
-blocks it:
+| Platform | File | Notes |
+|---|---|---|
+| **macOS 11+** | `Ferry-<version>-macos-universal.zip` | universal — Apple Silicon and Intel |
+| **Windows 10+** | `Ferry.exe` | single file, no installer, needs the WebView2 runtime |
+
+Neither build is code-signed, so both operating systems will warn you once.
+
+**macOS:** right-click the app → **Open** → **Open**. Or:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/Ferry.app
 ```
 
+**Windows:** SmartScreen shows "Windows protected your PC" → **More info** → **Run anyway**.
+Windows 11 already has the WebView2 runtime; on Windows 10 install the
+[Evergreen WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
+if the window opens blank.
+
 ### Or build it yourself
 
-Requires macOS 11+ and [Rust](https://rustup.rs).
+Requires [Rust](https://rustup.rs). `build.sh` is macOS; on Windows run
+`cargo build --release --manifest-path src-tauri/Cargo.toml`.
 
 ```bash
 git clone https://github.com/ahkamboh/ferry.git
@@ -158,11 +167,11 @@ Its transcript was pruned by Claude Code's cleanup. The record survives, the con
 No. Ferry has no network code. It reads and writes local files only.
 
 **Does it work on Windows or Linux?**
-Only macOS is built and tested. Windows path handling is already in the code — the layout
-there is `%APPDATA%\Claude\claude-code-sessions` with transcripts in `%USERPROFILE%\.claude\projects`
-— but no Windows binary is published and nobody has run it end to end. On Linux there is no
-Claude Code desktop app, so there are no per-account chat records to move; only the archive
-half would apply.
+macOS and Windows are both built and tested. On Windows the layout is
+`%APPDATA%\Claude\claude-code-sessions` with transcripts in `%USERPROFILE%\.claude\projects`,
+and a working directory like `D:\Claude` maps to the folder `D--Claude`. Linux has no Claude
+Code desktop app, so there are no per-account chat records to move — only the archive half
+would apply.
 
 **Is it affiliated with Anthropic?**
 No. Ferry is an independent tool that reads local files written by Claude Code.
