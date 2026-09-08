@@ -14,6 +14,7 @@
 A 4 MB native app for macOS and Windows, plus a zero-dependency CLI, for the chat history Claude Code keeps on your machine.
 
 [![Download](https://img.shields.io/badge/%E2%86%93%20Download-macOS%20%7C%20Windows-d97757?style=for-the-badge)](https://github.com/ahkamboh/ferry/releases/latest)
+[![Website](https://img.shields.io/badge/Website-ahkamboh.github.io%2Fferry-1f1e1d?style=for-the-badge)](https://ahkamboh.github.io/ferry/)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-d97757.svg)](LICENSE)
 ![Platform: macOS and Windows](https://img.shields.io/badge/platform-macOS%2011%2B%20%7C%20Windows%2010%2B-1f1e1d)
