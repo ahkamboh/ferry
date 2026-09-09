@@ -185,6 +185,57 @@ fn transcripts_for(rec: &Value) -> Vec<Value> {
     }).collect()
 }
 
+/// Every <account>/<org> scope under the sessions root, found by walking the
+/// directory rather than by pattern matching. Returns (account, org, dir).
+fn scopes_on_disk() -> Vec<(String, String, PathBuf)> {
+    let mut out = vec![];
+    let root = PathBuf::from(sess());
+    let Ok(l1) = fs::read_dir(&root) else { return out };
+    for a in l1.flatten() {
+        if !a.path().is_dir() { continue; }
+        let acct = a.file_name().to_string_lossy().to_string();
+        let Ok(l2) = fs::read_dir(a.path()) else { continue };
+        for o in l2.flatten() {
+            if !o.path().is_dir() { continue; }
+            out.push((acct.clone(), o.file_name().to_string_lossy().to_string(), o.path()));
+        }
+    }
+    out
+}
+
+/// What the scan actually looked at. Surfaced in the UI so an empty list can
+/// explain itself instead of just showing nothing.
+fn diagnostics() -> Value {
+    let root = PathBuf::from(sess());
+    let mut level1 = vec![];
+    if let Ok(rd) = fs::read_dir(&root) {
+        for e in rd.flatten() { level1.push(e.file_name().to_string_lossy().to_string()); }
+    }
+    let scopes = scopes_on_disk();
+    let mut records = 0usize;
+    for (_, _, dir) in &scopes {
+        if let Ok(rd) = fs::read_dir(dir) {
+            records += rd.flatten().filter(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.starts_with("local_") && n.ends_with(".json")
+            }).count();
+        }
+    }
+    json!({
+        "sessionsRoot": sess(),
+        "sessionsRootExists": root.is_dir(),
+        "entriesAtRoot": level1.len(),
+        "rootEntries": level1.iter().take(8).cloned().collect::<Vec<_>>(),
+        "scopesFound": scopes.len(),
+        "chatRecordsFound": records,
+        "projectsRoot": proj(),
+        "projectsRootExists": Path::new(&proj()).is_dir(),
+        "home": home(),
+        "appdata": std::env::var("APPDATA").unwrap_or_else(|_| "(unset)".into()),
+        "userprofile": std::env::var("USERPROFILE").unwrap_or_else(|_| "(unset)".into()),
+    })
+}
+
 #[tauri::command]
 fn scan() -> Value {
     let cur = read_json(&cfg()).and_then(|c| c["lastKnownAccountUuid"].as_str().map(String::from));
@@ -201,12 +252,13 @@ fn scan() -> Value {
         }));
     };
 
-    if let Ok(paths) = glob::glob(&format!("{}/*/*/local_*.json", sess())) {
-        for p in paths.flatten() {
-            let parts: Vec<String> = p.iter().map(|s| s.to_string_lossy().to_string()).collect();
-            let n = parts.len();
-            if n < 3 { continue; }
-            let (acct, org) = (parts[n-3].clone(), parts[n-2].clone());
+    for (acct, org, dir) in scopes_on_disk() {
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if !(name.starts_with("local_") && name.ends_with(".json")) { continue; }
+            let (acct, org) = (acct.clone(), org.clone());
             let Some(rec) = read_json(&p.to_string_lossy()) else { continue };
             touch(&mut scopes, &acct, &org);
             let key = format!("{}|{}", acct, org);
@@ -243,14 +295,14 @@ fn scan() -> Value {
             }
         }
     }
-    if let Ok(paths) = glob::glob(&format!("{}/*/*/deleted_*", sess())) {
-        for p in paths.flatten() {
-            let parts: Vec<String> = p.iter().map(|s| s.to_string_lossy().to_string()).collect();
-            let n = parts.len();
-            if n < 3 { continue; }
-            let (acct, org) = (parts[n-3].clone(), parts[n-2].clone());
+    for (acct, org, dir) in scopes_on_disk() {
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            let base = e.file_name().to_string_lossy().to_string();
+            if !base.starts_with("deleted_") { continue; }
+            let (acct, org) = (acct.clone(), org.clone());
             touch(&mut scopes, &acct, &org);
-            let base = parts[n-1].clone();
             let short = base.trim_start_matches("deleted_").to_string();
             let when: Option<u64> = fs::read_to_string(&p).ok().and_then(|s| s.trim().parse().ok());
             let key = format!("{}|{}", acct, org);
@@ -270,7 +322,8 @@ fn scan() -> Value {
         s["chats"].as_array().unwrap().iter().map(|c| c["last"].as_u64().unwrap_or(0)).max().unwrap_or(0)));
     json!({ "scopes": list, "current": cur, "appRunning": app_running(),
             "vault": vault(), "exportDir": last_export_dir(),
-            "paths": { "sessions": sess(), "projects": proj(), "home": home() } })
+            "paths": { "sessions": sess(), "projects": proj(), "home": home() },
+            "diag": diagnostics() })
 }
 
 /// Walk every transcript that belongs to one chat, oldest session first.
