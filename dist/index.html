@@ -123,11 +123,13 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
  color:var(--dim);margin:5px 5px 0 0}
 .tchip b{color:var(--ink);font-weight:600}
 
-.diag{padding:34px 30px;max-width:640px}
+.diag{padding:34px 30px;max-width:720px}
 .diag h3{font-size:15px;margin-bottom:6px}
 .diag p{color:var(--dim);font-size:12.5px;line-height:1.6}
-.diag .kv{display:grid;grid-template-columns:130px 1fr;gap:6px 14px;margin-top:16px;font-size:11.5px}
+.diag .kv{display:grid;grid-template-columns:150px 1fr;gap:6px 14px;margin-top:16px;font-size:11.5px}
 .diag .k{color:var(--faint)}
+.diag .ok{color:var(--ok);font-weight:600}
+.diag .bad{color:var(--warn);font-weight:600}
 .diag .v{word-break:break-all;font-family:ui-monospace,"SF Mono",Menlo,monospace}
 .diag code{background:var(--code);border:1px solid var(--line);border-radius:4px;padding:1px 5px;
  font:11px ui-monospace,"SF Mono",Menlo,monospace}
@@ -241,28 +243,35 @@ const label=s=>(s.profile&&s.profile.email)||s.label||s.acct.slice(0,8);
 
 function diagPanel(){
   const d=(S&&S.diag)||{};
-  const row=(k,v)=>'<div class=k>'+esc(k)+'</div><div class=v>'+esc(String(v))+'</div>';
+  const row=(k,v)=>'<div class=k>'+esc(k)+'</div><div class=v>'+v+'</div>';
+  const probe=x=>!x?'?':(x.ok? (x.isDir?'<b class=ok>directory</b>':'exists, not a directory')
+                             : '<b class=bad>'+esc(x.error)+'</b> — '+esc(x.detail||''));
+  const lst=x=>!x?'?':(x.ok? x.count+' entries'
+                           : '<b class=bad>'+esc(x.error)+'</b> — '+esc(x.detail||''));
+  const ad=d.appdataList||{};
+  const claudeish=(ad.names||[]).filter(n=>/claude/i.test(n));
   return '<div class=diag>'
     +'<h3>No Claude accounts found on this machine</h3>'
-    +'<p>Ferry looked here and came back empty. If these paths look wrong, that is the problem.</p>'
+    +'<p>Ferry looked here and came back empty. The line that matters is <b>sessions root</b>.</p>'
     +'<div class=kv>'
-      +row('sessions root', d.sessionsRoot||'?')
-      +row('root exists', d.sessionsRootExists ? 'yes' : 'NO')
-      +row('entries at root', d.entriesAtRoot)
-      +row('account/org scopes', d.scopesFound)
-      +row('chat records', d.chatRecordsFound)
-      +row('projects root', d.projectsRoot||'?')
-      +row('projects exists', d.projectsRootExists ? 'yes' : 'NO')
-      +row('APPDATA', d.appdata||'-')
-      +row('USERPROFILE', d.userprofile||'-')
-      +row('home', d.home||'-')
+      +row('sessions root', '<code>'+esc(d.sessionsRoot||'?')+'</code>')
+      +row('&nbsp;&nbsp;status', probe(d.sessionsProbe))
+      +row('&nbsp;&nbsp;contents', lst(d.sessionsList))
+      +row('Claude folder', '<code>'+esc(d.claudeDir||'?')+'</code>')
+      +row('&nbsp;&nbsp;status', probe(d.claudeDirProbe))
+      +row('projects root', '<code>'+esc(d.projectsRoot||'?')+'</code>')
+      +row('&nbsp;&nbsp;status', probe(d.projectsProbe))
+      +row('APPDATA', '<code>'+esc(d.appdata||'-')+'</code>')
+      +row('&nbsp;&nbsp;contents', lst(ad))
+      +row('USERPROFILE', '<code>'+esc(d.userprofile||'-')+'</code>')
     +'</div>'
-    +(d.rootEntries&&d.rootEntries.length
-        ? '<p style="margin-top:12px">Folders it can see at the root: <code>'
-          +d.rootEntries.map(esc).join('</code>, <code>')+'</code></p>' : '')
-    +'<p style="margin-top:12px">Most common cause: Ferry is running as a different Windows user '
-    +'than the one Claude is signed in on, so <code>APPDATA</code> points at the wrong profile. '
-    +'Launch it normally rather than as administrator.</p>'
+    +'<p style="margin-top:14px">Claude-ish folders visible in APPDATA: '
+      +(claudeish.length?'<code>'+claudeish.map(esc).join('</code>, <code>')+'</code>'
+                        :'<b class=bad>none</b>')+'</p>'
+    +'<p style="margin-top:12px"><b>AccessDenied</b> means antivirus or Controlled Folder Access is '
+    +'blocking an unsigned app from reading another app\'s data — add an exclusion for Ferry.exe. '
+    +'<b>NotFound</b> with no Claude folder above means the desktop app stores its data elsewhere '
+    +'on this machine.</p>'
     +'</div>';
 }
 

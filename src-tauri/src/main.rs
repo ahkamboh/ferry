@@ -205,12 +205,28 @@ fn scopes_on_disk() -> Vec<(String, String, PathBuf)> {
 
 /// What the scan actually looked at. Surfaced in the UI so an empty list can
 /// explain itself instead of just showing nothing.
-fn diagnostics() -> Value {
-    let root = PathBuf::from(sess());
-    let mut level1 = vec![];
-    if let Ok(rd) = fs::read_dir(&root) {
-        for e in rd.flatten() { level1.push(e.file_name().to_string_lossy().to_string()); }
+fn probe(path: &str) -> Value {
+    // is_dir() collapses every failure into `false`, which hides the difference
+    // between "not there" and "not allowed". Report the actual error instead.
+    match fs::metadata(path) {
+        Ok(m) => json!({ "ok": true, "isDir": m.is_dir() }),
+        Err(e) => json!({ "ok": false, "error": format!("{:?}", e.kind()), "detail": e.to_string() }),
     }
+}
+
+fn list_dir(path: &str, take: usize) -> Value {
+    match fs::read_dir(path) {
+        Ok(rd) => {
+            let names: Vec<String> = rd.flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string()).collect();
+            json!({ "ok": true, "count": names.len(),
+                    "names": names.iter().take(take).cloned().collect::<Vec<_>>() })
+        }
+        Err(e) => json!({ "ok": false, "error": format!("{:?}", e.kind()), "detail": e.to_string() }),
+    }
+}
+
+fn diagnostics() -> Value {
     let scopes = scopes_on_disk();
     let mut records = 0usize;
     for (_, _, dir) in &scopes {
@@ -223,13 +239,16 @@ fn diagnostics() -> Value {
     }
     json!({
         "sessionsRoot": sess(),
-        "sessionsRootExists": root.is_dir(),
-        "entriesAtRoot": level1.len(),
-        "rootEntries": level1.iter().take(8).cloned().collect::<Vec<_>>(),
+        "sessionsProbe": probe(&sess()),
+        "sessionsList": list_dir(&sess(), 8),
+        "claudeDir": claude_dir(),
+        "claudeDirProbe": probe(&claude_dir()),
+        "appdataList": list_dir(&std::env::var("APPDATA")
+                        .unwrap_or_else(|_| format!("{}/AppData/Roaming", home())), 40),
         "scopesFound": scopes.len(),
         "chatRecordsFound": records,
         "projectsRoot": proj(),
-        "projectsRootExists": Path::new(&proj()).is_dir(),
+        "projectsProbe": probe(&proj()),
         "home": home(),
         "appdata": std::env::var("APPDATA").unwrap_or_else(|_| "(unset)".into()),
         "userprofile": std::env::var("USERPROFILE").unwrap_or_else(|_| "(unset)".into()),
