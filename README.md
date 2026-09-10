@@ -191,9 +191,9 @@ No. Ferry is an independent tool that reads local files written by Claude Code.
 
 Rust + [Tauri 2](https://tauri.app) with a plain HTML/CSS/JS front end — no framework, no npm, no build step for the UI. The Markdown renderer is about 60 lines, written for this app, so nothing is fetched at runtime.
 
-The loading mascot is Clawd riding a ferry, built from Unicode block characters with the
-poses from [mascot-maker](https://github.com/ahkamboh/mascot-maker). Each character is drawn
-as SVG quadrants, so it looks the same whatever monospace font the machine has.
+On Windows, the loading mascot is the Ferry logo come alive: one head per account, joined by
+the bar, with a chat that rides across while a copy or move runs. It is pixel art in the style of
+[mascot-maker](https://github.com/ahkamboh/mascot-maker), drawn as SVG in the theme's colours.
 
 ## Contributing
 
