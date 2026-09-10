@@ -336,8 +336,8 @@ fn diagnostics() -> Value {
 
 // Tauri runs a plain `fn` command on the main thread, so on Windows a slow
 // disk scan froze the whole window. There the commands below use
-// `command(async)`, which runs the same fn on a worker; macOS keeps the plain
-// attribute and behaves exactly as before.
+// `command(async)`. Tried on macOS too and the window became unstable
+// (it vanished after ~10 s), so macOS keeps the plain attribute.
 #[cfg_attr(target_os = "windows", tauri::command(async))]
 #[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn scan() -> Value {
