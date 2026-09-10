@@ -168,6 +168,13 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 #busy .msg{font-size:13.5px;font-weight:560;max-width:340px;text-align:center;
  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(prefers-reduced-motion:reduce){.sk,.mascot *{animation:none!important}}
+#ctx{position:fixed;display:none;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+ box-shadow:var(--sh);padding:4px;z-index:60;min-width:150px}
+#ctx.on{display:block}
+#ctx button{display:flex;width:100%;align-items:center;justify-content:space-between;gap:18px;
+ padding:6px 10px;border-radius:7px;font-size:12.5px}
+#ctx button:hover{background:var(--raise)}
+#ctx kbd{font:10.5px ui-monospace,"SF Mono",Menlo,monospace;color:var(--faint)}
 </style></head><body>
 
 <div id=bar>
@@ -183,6 +190,7 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
   <div class=col id=read></div>
 </main>
 <div id=drop></div><div id=toast></div>
+<div id=ctx role=menu><button role=menuitem onclick=refresh()>Refresh <kbd>F5</kbd></button></div>
 <div id=busy role=status aria-live=polite><div class=card><div id=bm></div><div class=msg id=bmsg></div></div></div>
 
 <script>
@@ -265,6 +273,22 @@ async function busy(msg,fn,o={}){
     b.className="";busyOn=false;}
 }
 const refresh=()=>busy("Reading your chats…",load);
+
+/* ---------- right-click ----------
+   The webview's own menu (Back, Reload, Save as, Print…) means nothing in an
+   app, so it is replaced by one item. Text fields keep theirs for cut/paste.
+   F5 and Ctrl+R re-read from disk instead of reloading the page. */
+document.addEventListener("contextmenu",e=>{
+  if(e.target.closest("input,textarea"))return;
+  e.preventDefault();const m=$("#ctx");m.className="on";
+  m.style.left=Math.min(e.clientX,innerWidth-m.offsetWidth-8)+"px";
+  m.style.top=Math.min(e.clientY,innerHeight-m.offsetHeight-8)+"px";});
+const hideCtx=()=>$("#ctx").className="";
+document.addEventListener("click",hideCtx);
+addEventListener("blur",hideCtx);
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape")hideCtx();
+  if(e.key==="F5"||((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="r")){e.preventDefault();hideCtx();refresh();}});
 
 /* ---------- markdown ---------- */
 function md(src){
