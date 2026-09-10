@@ -357,7 +357,8 @@ async function transfer(path,t,mv){
     else{await play(LOOK);do{await play(TRIP);}while(!landed&&!err);}
     await work;
     if(err)return toast(err,true);
-    $("#askh").textContent=mv?"Chat moved":"Chat copied";$("#astat").textContent=ok;
+    $("#askh").textContent=mv?"Chat moved":"Chat copied";          // the title says it; the status line
+    $("#astat").style.visibility="hidden";                           // steps aside, keeping its space
     $("#tfrom").classList.remove("hl");$("#tto").classList.add("hl");   // the ring follows the chat
     if(mv)$("#tfrom").classList.add("out");
     await Promise.all([                            // cheer while the lists redraw behind the card
