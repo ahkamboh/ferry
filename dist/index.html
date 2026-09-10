@@ -270,7 +270,9 @@ function diagPanel(){
                         :'<b class=bad>none</b>')+'</p>'
     +'<p style="margin-top:12px"><b>AccessDenied</b> means antivirus or Controlled Folder Access is '
     +'blocking an unsigned app from reading another app\'s data — add an exclusion for Ferry.exe. '
-    +'<b>NotFound</b> with no Claude folder above means the desktop app stores its data elsewhere '
+    +'<b>NotFound</b> means neither <code>%APPDATA%\\Claude</code> nor the Microsoft Store location '
+    +'<code>%LOCALAPPDATA%\\Packages\\Claude_*\\LocalCache\\Roaming\\Claude</code> has a '
+    +'<code>claude-code-sessions</code> folder, so the desktop app stores its data elsewhere '
     +'on this machine.</p>'
     +'</div>';
 }
