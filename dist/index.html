@@ -185,7 +185,7 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
  border-radius:10px;background:var(--bg);font-size:12.5px;font-weight:560}
 .route .who{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
 .route .who>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.route .mascot{width:58px;flex:none;margin:-6px 0}
+.route .mascot{width:84px;flex:none;margin:-8px 0}
 .askc p{color:var(--dim);font-size:12.5px;line-height:1.55}
 .askc p+p{margin-top:6px}
 .askc p b{color:var(--ink);font-weight:600}
@@ -312,7 +312,7 @@ const LOOK=[{look:1},{look:1},{look:1}],TRIP=[],CHEER=Array(7).fill(HAPPY);
 for(let i=0;i<=11;i++)TRIP.push({look:1,cargo:i/11});
 async function transfer(path,t,mv){
   if(busyOn)return;busyOn=true;
-  const a=$("#ask"),ok=(mv?"Moved to ":"Copied to ")+label(t);
+  const a=$("#ask"),ok=(mv?"Moved to ":"Copied to ")+short(t);
   let err=null,landed=false;
   try{
     if(!a.className)ask(path,t,mv);                              // it always runs in the card
@@ -320,7 +320,7 @@ async function transfer(path,t,mv){
     a.onclick=null;                                              // no cancelling mid-trip
     $("#askh").textContent=mv?"Moving this chat…":"Copying this chat…";
     a.querySelectorAll(".askc p").forEach(x=>x.remove());
-    a.querySelector(".askb").outerHTML='<p class=stat id=astat>'+esc((mv?"Moving to ":"Copying to ")+label(t))+'…</p>';
+    a.querySelector(".askb").outerHTML='<p class=stat id=astat>'+esc((mv?"Moving to ":"Copying to ")+short(t))+'…</p>';
     const m=a.querySelector(".route .mascot");m.classList.add("own");   // the idle loop lets go of it
     const play=fs=>new Promise(z=>{let i=0;(function f(){
       if(i>=fs.length||err)return z();m.innerHTML=drawMascot(fs[i++]);setTimeout(f,110);})();});
@@ -371,14 +371,17 @@ function closeChat(){if(!chatPath)return;
   chatPath=null;drawList();drawRead(null);}
 const closeAsk=()=>{const a=$("#ask");a.className="";a.innerHTML="";};
 function chatAt(p){for(const s of S.scopes)for(const c of s.chats)if(c.path===p)return [s,c];return [];}
+// The card names an account by the part before the @; hovering shows the rest.
+const short=s=>label(s).split("@")[0];
+const whoTip=s=>label(s)+"\nAccount "+s.acct.slice(0,8)+(s.isCurrent?" · signed in now":"");
 function who(s,id){const nm=label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
-  return '<span class=who id='+id+'><span class=av style="background:hsl('+hue(s.acct)+' 42% 48%)">'+esc(ini)+
-    '</span><span>'+esc(nm)+'</span></span>';}
+  return '<span class=who id='+id+' title="'+esc(whoTip(s))+'"><span class=av style="background:hsl('+
+    hue(s.acct)+' 42% 48%)">'+esc(ini)+'</span><span>'+esc(short(s))+'</span></span>';}
 // Say exactly what a copy or move will do before doing it. mv is true or
 // false from the buttons, or null after a drag, when the card offers both.
 function ask(p,t,mv){
   const [s,c]=chatAt(p);if(!s||!t)return;
-  const from=esc(label(s)),to=esc(label(t)),a=$("#ask");
+  const from=esc(short(s)),to=esc(short(t)),a=$("#ask");
   a.innerHTML='<div class=askc role=dialog aria-modal=true aria-labelledby=askh>'+
     '<h3 id=askh>'+(mv===null?'Copy or move this chat?':mv?'Move this chat?':'Copy this chat?')+'</h3>'+
     '<div class=ct>'+esc(c.title)+'</div>'+
@@ -386,7 +389,6 @@ function ask(p,t,mv){
     (mv!==true?'<p><b>Copy</b> adds it to '+to+' and keeps it in '+from+'.</p>':'')+
     (mv!==false?'<p><b>Move</b> adds it to '+to+' and removes it from '+from+
       ', where you can restore it from the deleted list.</p>':'')+
-    '<p>Only the chat\'s small record changes; the conversation stays where it is, and a snapshot is saved first.</p>'+
     (S.appRunning?'<p class=warn>Claude is open, so Ferry can\'t write yet. Quit Claude, then confirm.</p>':'')+
     '<div class=askb><button class=btn id=an>Cancel</button>'+
       (mv!==false?'<button class="btn'+(mv?' p':'')+'" id=am>Move</button>':'')+
