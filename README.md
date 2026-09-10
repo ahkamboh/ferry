@@ -85,6 +85,9 @@ xattr -dr com.apple.quarantine /Applications/Ferry.app
 ```
 
 **Windows:** SmartScreen shows "Windows protected your PC" → **More info** → **Run anyway**.
+If it says **Smart App Control blocked an app** instead, there is no Run anyway: Smart App
+Control only allows signed apps. Use the [CLI](#cli)'s `ui` command, which serves the same
+interface, or turn Smart App Control off under Windows Security → App & browser control.
 Windows 11 already has the WebView2 runtime; on Windows 10 install the
 [Evergreen WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
 if the window opens blank.
@@ -173,6 +176,13 @@ macOS and Windows are both built and tested. On Windows the layout is
 and a working directory like `D:\Claude` maps to the folder `D--Claude`. Linux has no Claude
 Code desktop app, so there are no per-account chat records to move — only the archive half
 would apply.
+
+**Ferry shows no accounts on Windows, but Claude has chats.**
+The Microsoft Store build of Claude runs in a container that redirects `%APPDATA%\Claude` to
+`%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude`. Only Claude sees the redirect,
+so anything outside it — Ferry, or a terminal you opened yourself — finds `%APPDATA%\Claude`
+empty. Ferry checks both and uses the one with the newest chats. If it still comes back empty,
+the window lists every path it looked at; include that in an issue.
 
 **Is it affiliated with Anthropic?**
 No. Ferry is an independent tool that reads local files written by Claude Code.

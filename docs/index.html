@@ -189,7 +189,7 @@ python3 ferry-cli.py ui                      # the same interface in a browser</
   <h2>Questions</h2>
 
   <div class="q"><h3>Where does Claude Code store chat history?</h3>
-  <p>Two places. Per-account metadata under <code>Application&nbsp;Support/Claude/claude-code-sessions/</code> on macOS or <code>%APPDATA%\Claude\claude-code-sessions\</code> on Windows, and the conversations themselves as JSONL files in <code>~/.claude/projects/</code>.</p></div>
+  <p>Two places. Per-account metadata under <code>Application&nbsp;Support/Claude/claude-code-sessions/</code> on macOS or <code>%APPDATA%\Claude\claude-code-sessions\</code> on Windows (<code>%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude-code-sessions\</code> if Claude came from the Microsoft Store), and the conversations themselves as JSONL files in <code>~/.claude/projects/</code>.</p></div>
 
   <div class="q"><h3>I switched Claude accounts and my chats disappeared. Are they gone?</h3>
   <p>No. The transcripts are still on disk — only the per-account metadata changed. Ferry finds every account it can see and copies a chat into the one you're using now.</p></div>
@@ -201,7 +201,7 @@ python3 ferry-cli.py ui                      # the same interface in a browser</
   <p>No. Ferry has no network code at all. It reads and writes local files, nothing else.</p></div>
 
   <div class="q"><h3>Why does my Mac or PC warn me when I open it?</h3>
-  <p>Neither build is code-signed. On macOS, right-click the app → <strong>Open</strong> → <strong>Open</strong>. On Windows, SmartScreen → <strong>More info</strong> → <strong>Run anyway</strong>. Once each.</p></div>
+  <p>Neither build is code-signed. On macOS, right-click the app → <strong>Open</strong> → <strong>Open</strong>. On Windows, SmartScreen → <strong>More info</strong> → <strong>Run anyway</strong>. Once each. If Windows says <strong>Smart App Control blocked an app</strong>, there is no Run anyway: use the CLI's <code>ui</code> command, which serves the same interface, or turn Smart App Control off in Windows Security.</p></div>
 
   <div class="q"><h3>Does it work on Linux?</h3>
   <p>There's no Claude Code desktop app on Linux, so there are no per-account chat records to move. Only the archive half would apply.</p></div>
