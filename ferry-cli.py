@@ -314,7 +314,8 @@ def op_undelete(acct, org, sid, force=False):
     for cand in glob.glob(f"{SESS}/*/*/{sid}.json"):
         src = cand; break
     if not src:
-        v = sorted(glob.glob(f"{VAULT}/chats/*/{sid}.json"))
+        # vault layout is chats/<stamp>/<account>/<file>, so two wildcards
+        v = sorted(glob.glob(f"{VAULT}/chats/*/*/{sid}.json"))
         if v: src = v[-1]
     if not src: raise RuntimeError("no surviving copy found in any account or the vault")
     rec = read_rec(src)
