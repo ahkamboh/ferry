@@ -272,23 +272,27 @@ async function busy(msg,fn,o={}){
       if(left>0)await new Promise(z=>setTimeout(z,left));}
     b.className="";busyOn=false;}
 }
-const refresh=()=>busy("Reading your chats…",load);
+// The loading states, busy card and right-click menu are Windows-only (WIN);
+// on macOS every path below falls through to the original behaviour.
+const refresh=()=>WIN?busy("Reading your chats…",load):load();
 
-/* ---------- right-click ----------
-   The webview's own menu (Back, Reload, Save as, Print…) means nothing in an
+/* ---------- right-click (Windows) ----------
+   WebView2's own menu (Back, Reload, Save as, Print…) means nothing in an
    app, so it is replaced by one item. Text fields keep theirs for cut/paste.
    F5 and Ctrl+R re-read from disk instead of reloading the page. */
-document.addEventListener("contextmenu",e=>{
-  if(e.target.closest("input,textarea"))return;
-  e.preventDefault();const m=$("#ctx");m.className="on";
-  m.style.left=Math.min(e.clientX,innerWidth-m.offsetWidth-8)+"px";
-  m.style.top=Math.min(e.clientY,innerHeight-m.offsetHeight-8)+"px";});
-const hideCtx=()=>$("#ctx").className="";
-document.addEventListener("click",hideCtx);
-addEventListener("blur",hideCtx);
-document.addEventListener("keydown",e=>{
-  if(e.key==="Escape")hideCtx();
-  if(e.key==="F5"||((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="r")){e.preventDefault();hideCtx();refresh();}});
+if(WIN){
+  const hideCtx=()=>$("#ctx").className="";
+  document.addEventListener("contextmenu",e=>{
+    if(e.target.closest("input,textarea"))return;
+    e.preventDefault();const m=$("#ctx");m.className="on";
+    m.style.left=Math.min(e.clientX,innerWidth-m.offsetWidth-8)+"px";
+    m.style.top=Math.min(e.clientY,innerHeight-m.offsetHeight-8)+"px";});
+  document.addEventListener("click",hideCtx);
+  addEventListener("blur",hideCtx);
+  document.addEventListener("keydown",e=>{
+    if(e.key==="Escape")hideCtx();
+    if(e.key==="F5"||(e.ctrlKey&&e.key.toLowerCase()==="r")){e.preventDefault();hideCtx();refresh();}});
+}
 
 /* ---------- markdown ---------- */
 function md(src){
@@ -450,6 +454,7 @@ function askDrop(e,k){
 }
 
 async function openChat(p){chatPath=p;drawList();
+  if(!WIN){try{drawRead(await iv("chat_detail",{path:p}));}catch(e){toast(String(e),true);}return;}
   // a long transcript takes a moment to read: show the ferry rather than a stale chat
   const t=setTimeout(()=>{$("#read").innerHTML='<div class=loading>'+mascot()+'<div>Opening chat…</div></div>';wake();},120);
   try{const d=await iv("chat_detail",{path:p});clearTimeout(t);
@@ -498,7 +503,7 @@ async function op(cmd,args,ok,msg,o){
     if(chatPath&&cmd!=="delete_chat"){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){drawRead(null);}}
     else drawRead(null);return r;}
   catch(e){toast(String(e),true);}};
-  return msg?busy(msg,run,o):run();}   // no card for delete: its own dialog is already up
+  return msg&&WIN?busy(msg,run,o):run();}   // no card for delete: its own dialog is already up
 async function doExport(){
   try{ const r=await iv("export_chat",{path:chatPath,fmt:$("#fmt").value,ask:true});
        if(r.cancelled) return toast("Download cancelled");
@@ -514,11 +519,15 @@ function send(path,t,mv){const done=(mv?"Moved to ":"Copied to ")+label(t);
      (mv?"Moving to ":"Copying to ")+label(t)+"…",{now:true,min:650,cheer:true});}
 const undel=id=>{const s=scope();op("undelete_chat",{acct:s.acct,org:s.org,id:id},"Restored","Restoring…");};
 const setLabel=(a,v)=>op("set_label",{acct:a,name:v},"Saved");
-const vault=()=>busy("Backing up every chat…",async()=>{
+async function backup(){
   try{const r=await iv("run_vault");
     toast("Backed up "+r.records+" chats · "+r.transcripts+" new files · "+r.mb+" MB");}
-  catch(e){toast(String(e),true);}},{now:true});
-drawSkeleton();           // held at least 700 ms so a fast scan reads as loading, not a flicker
-load(new Promise(z=>setTimeout(z,700))).then(()=>{if(S.scopes.length)drawRead(null);})
+  catch(e){toast(String(e),true);}}
+function vault(){if(WIN)return busy("Backing up every chat…",backup,{now:true});
+  toast("Backing up...");return backup();}
+if(WIN){
+  drawSkeleton();         // held at least 700 ms so a fast scan reads as loading, not a flicker
+  load(new Promise(z=>setTimeout(z,700))).then(()=>{if(S.scopes.length)drawRead(null);})
       .catch(e=>{$("#read").innerHTML='<div class=empty style="color:var(--warn)">'+esc(e)+'</div>';});
+}else{drawRead(null);load();}
 </script></body></html>
