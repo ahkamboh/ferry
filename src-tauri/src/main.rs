@@ -290,11 +290,13 @@ fn diagnostics() -> Value {
     })
 }
 
-// Every command below is async. Tauri runs a plain `fn` command on the main
-// thread, so a slow disk scan froze the whole window; async ones run on a
-// worker and the UI keeps drawing (the loading mascot included).
-#[tauri::command]
-async fn scan() -> Value {
+// Tauri runs a plain `fn` command on the main thread, so on Windows a slow
+// disk scan froze the whole window. There the commands below use
+// `command(async)`, which runs the same fn on a worker; macOS keeps the plain
+// attribute and behaves exactly as before.
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn scan() -> Value {
     let cur = read_json(&cfg()).and_then(|c| c["lastKnownAccountUuid"].as_str().map(String::from));
     let labs = labels();
     let profs = profiles();
@@ -434,8 +436,9 @@ fn collect_msgs(tr: &[Value], cap: usize, per_msg: usize) -> Vec<Value> {
     msgs
 }
 
-#[tauri::command]
-async fn chat_detail(path: String) -> Result<Value, String> {
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn chat_detail(path: String) -> Result<Value, String> {
     if !under(&sess(), &path) {
         return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
     }
@@ -543,8 +546,9 @@ async fn export_chat(app: tauri::AppHandle, path: String, fmt: String, ask: bool
                "messages": msgs.len(), "kb": (size as f64/1024.0).round() as u64 }))
 }
 
-#[tauri::command]
-async fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<Value, String> {
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<Value, String> {
     guard()?;
     if !under(&sess(), &path) {
         return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
@@ -573,8 +577,9 @@ async fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<
     Ok(json!({ "ok": true, "wrote": dst, "moved": mv }))
 }
 
-#[tauri::command]
-async fn rename_chat(path: String, title: String) -> Result<Value, String> {
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn rename_chat(path: String, title: String) -> Result<Value, String> {
     guard()?;
     if !under(&sess(), &path) {
         return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
@@ -620,8 +625,9 @@ async fn delete_chat(app: tauri::AppHandle, path: String) -> Result<Value, Strin
     Ok(json!({ "ok": true }))
 }
 
-#[tauri::command]
-async fn undelete_chat(acct: String, org: String, id: String) -> Result<Value, String> {
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn undelete_chat(acct: String, org: String, id: String) -> Result<Value, String> {
     guard()?;
     let short = id.trim_start_matches("local_").to_string();
     let mut src: Option<PathBuf> = None;
@@ -646,8 +652,9 @@ async fn undelete_chat(acct: String, org: String, id: String) -> Result<Value, S
     Ok(json!({ "ok": true, "from": src.to_string_lossy() }))
 }
 
-#[tauri::command]
-async fn set_label(acct: String, name: String) -> Result<Value, String> {
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn set_label(acct: String, name: String) -> Result<Value, String> {
     let _ = fs::create_dir_all(vault());
     let mut l = labels();
     l[acct] = json!(name.trim());
@@ -655,8 +662,9 @@ async fn set_label(acct: String, name: String) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
-#[tauri::command]
-async fn run_vault() -> Result<Value, String> {
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn run_vault() -> Result<Value, String> {
     let base = format!("{}/chats/{}", vault(), stamp());
     fs::create_dir_all(&base).map_err(|e| e.to_string())?;
     let (mut recs, mut files, mut bytes) = (0u64, 0u64, 0u64);
