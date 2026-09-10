@@ -524,6 +524,14 @@ function drawSide(){
     el.ondragover=e=>{if(dragged&&el.dataset.k!==scopeKey){e.preventDefault();el.classList.add("drop");}};
     el.ondragleave=()=>el.classList.remove("drop");
     el.ondrop=e=>{e.preventDefault();el.classList.remove("drop");askDrop(e,el.dataset.k);};});
+  // Windows: accept dragenter as well as dragover - a strict drop target needs
+  // both, or the pointer over an account's name or avatar shows "no drop" -
+  // and only clear the highlight when the pointer really leaves the account.
+  if(WIN)document.querySelectorAll(".acct").forEach(el=>{
+    const ok=()=>dragged&&el.dataset.k!==scopeKey;
+    el.ondragenter=e=>{if(ok()){e.preventDefault();el.classList.add("drop");}};
+    el.ondragover=e=>{if(ok()){e.preventDefault();e.dataTransfer.dropEffect="copy";el.classList.add("drop");}};
+    el.ondragleave=e=>{if(!el.contains(e.relatedTarget))el.classList.remove("drop");};});
 }
 function pick(k){scopeKey=k;chatPath=null;drawSide();drawList();drawRead(null);}
 function drawEmpty(){ $("#read").innerHTML=diagPanel(); $("#list").innerHTML=""; }
@@ -543,6 +551,10 @@ function drawList(){
     const i=$("#q");i.focus();i.setSelectionRange(i.value.length,i.value.length);};
   document.querySelectorAll(".ch[draggable]").forEach(el=>{
     el.ondragstart=()=>dragged=el.dataset.p; el.ondragend=()=>dragged=null;});
+  // Windows: give the drag a payload and say it can copy or move; a drag that
+  // carries no data can be treated as having nothing to drop
+  if(WIN)document.querySelectorAll(".ch[draggable]").forEach(el=>el.ondragstart=e=>{dragged=el.dataset.p;
+    e.dataTransfer.effectAllowed="copyMove";e.dataTransfer.setData("text/plain",el.querySelector(".t").textContent);});
 }
 
 function askDrop(e,k){
