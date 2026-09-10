@@ -21,8 +21,6 @@ Claude picks up the old context instead of you explaining the project again — 
 ![Size: 4 MB](https://img.shields.io/badge/app-4%20MB-1f1e1d)
 ![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202%20%2B%20Rust-1f1e1d)
 
-<img src="assets/screenshot.png" width="920" alt="Ferry showing accounts, chats and a rendered conversation">
-
 https://github.com/user-attachments/assets/2b1b0864-71e7-43c3-b78e-b5f65c6dde21
 
 <sub>A chat left behind in an account you're signed out of, carried into the one you're using now — then a deleted chat restored from the archive.</sub>
