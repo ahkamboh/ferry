@@ -137,16 +137,20 @@ def profiles():
     pat = re.compile(
         rb"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
         rb".{0,24}?email_address.{0,4}?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})"
-        rb"(?:.{0,12}?full_name.{0,4}?([A-Za-z0-9 ._-]{2,40}))?", re.S)
+        # Claude's own UI shows display_name ("ahkamboh"), not full_name
+        # ("Ali Hamza Kamboh"), so capture both and prefer the former
+        rb"(?:.{0,16}?full_name.{0,4}?([A-Za-z0-9 ._-]{2,40}))?"
+        rb"(?:.{0,16}?display_name.{0,4}?([A-Za-z0-9 ._-]{2,40}))?", re.S)
     for root,_,files in os.walk(IDB):
         for fn in files:
             try: blob = open(os.path.join(root,fn),"rb").read()
             except Exception: continue
             for m in pat.finditer(blob):
                 uuid = m.group(1).decode()
-                found[uuid] = {"email": m.group(2).decode(),
-                               "name": (m.group(3) or b"").decode().strip()}
-    return known_profiles(found) if sys.platform == "win32" else found
+                disp = (m.group(4) or b"").decode().strip()
+                full = (m.group(3) or b"").decode().strip()
+                found[uuid] = {"email": m.group(2).decode(), "name": disp or full}
+    return known_profiles(found)     # the same files exist on macOS
 
 PROFILES = f"{VAULT}/profiles.json"
 
@@ -163,14 +167,19 @@ def known_profiles(found):
     files += glob.glob(f"{HOME}/.claude/backups/.claude.json.backup*")
     sw = f"{HOME}/.claude-swap-backup/configs"
     if os.path.isdir(sw): files += [os.path.join(sw, n) for n in os.listdir(sw) if n.endswith(".json")]
+    from_json = {}                     # a parsed field beats a scraped one
     for f in files:
         try: oa = json.load(open(f, encoding="utf-8")).get("oauthAccount") or {}
         except Exception: continue
         if oa.get("accountUuid") and oa.get("emailAddress"):
-            known[oa["accountUuid"]] = {"email": oa["emailAddress"],
-                                        "name": oa.get("displayName") or oa.get("fullName") or ""}
-    for k, v in found.items():         # what IndexedDB found is current
-        known[k] = {**v, "name": v.get("name") or (known.get(k) or {}).get("name", "")}
+            from_json[oa["accountUuid"]] = {"email": oa["emailAddress"],
+                                            "name": oa.get("displayName") or oa.get("fullName") or ""}
+    known.update(from_json)
+    for k, v in found.items():         # IndexedDB knows who is signed in right now,
+        prev = (known.get(k) or {})    # but its name is scraped out of a binary and
+        name = (from_json.get(k) or {}).get("name") \
+               or v.get("name") or prev.get("name", "")   # can be truncated
+        known[k] = {"email": v.get("email") or prev.get("email", ""), "name": name}
     if known != before:
         os.makedirs(VAULT, exist_ok=True)
         json.dump(known, open(PROFILES, "w", encoding="utf-8"), indent=1)
