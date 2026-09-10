@@ -91,14 +91,13 @@ def ts(ms):
     except Exception: return "?"
 
 def app_running():
+    if sys.platform == "win32":
+        # Chromium holds <user data>\lockfile open, unshared, while the app runs
+        # and Windows deletes it on exit; a PowerShell process query took ~2 s
+        try: open(f"{CLAUDE}/lockfile", "rb").close(); return False
+        except PermissionError: return True
+        except OSError: return False
     try:
-        if sys.platform == "win32":
-            # both the app and the CLI are claude.exe, so match the install path
-            out = subprocess.run(["powershell","-NoProfile","-Command",
-                "(Get-Process -Name Claude -ErrorAction SilentlyContinue | "
-                "Where-Object { $_.Path -like '*WindowsApps*' }).Count"],
-                capture_output=True, text=True).stdout.strip()
-            return out.isdigit() and int(out) > 0
         out = subprocess.run(["pgrep","-f","Claude.app/Contents/MacOS/Claude"],
                              capture_output=True, text=True).stdout.strip()
         return bool(out)
@@ -147,7 +146,35 @@ def profiles():
                 uuid = m.group(1).decode()
                 found[uuid] = {"email": m.group(2).decode(),
                                "name": (m.group(3) or b"").decode().strip()}
-    return found
+    return known_profiles(found) if sys.platform == "win32" else found
+
+PROFILES = f"{VAULT}/profiles.json"
+
+def known_profiles(found):
+    """IndexedDB only knows the signed-in account, and Claude keeps it locked
+    while it runs. Claude Code's own config names its account too ("oauthAccount"
+    in ~/.claude.json and its backups), and account switchers such as claude-swap
+    keep one copy per account. Every account seen is remembered in
+    ~/.ferry/profiles.json, so it keeps its name after sign-out."""
+    try: known = json.load(open(PROFILES, encoding="utf-8"))
+    except Exception: known = {}
+    before = dict(known)
+    files = [f"{HOME}/.claude.json", f"{HOME}/.claude.json.backup"]
+    files += glob.glob(f"{HOME}/.claude/backups/.claude.json.backup*")
+    sw = f"{HOME}/.claude-swap-backup/configs"
+    if os.path.isdir(sw): files += [os.path.join(sw, n) for n in os.listdir(sw) if n.endswith(".json")]
+    for f in files:
+        try: oa = json.load(open(f, encoding="utf-8")).get("oauthAccount") or {}
+        except Exception: continue
+        if oa.get("accountUuid") and oa.get("emailAddress"):
+            known[oa["accountUuid"]] = {"email": oa["emailAddress"],
+                                        "name": oa.get("displayName") or oa.get("fullName") or ""}
+    for k, v in found.items():         # what IndexedDB found is current
+        known[k] = {**v, "name": v.get("name") or (known.get(k) or {}).get("name", "")}
+    if known != before:
+        os.makedirs(VAULT, exist_ok=True)
+        json.dump(known, open(PROFILES, "w", encoding="utf-8"), indent=1)
+    return known
 
 def read_rec(path):
     # explicit utf-8: Windows defaults to the ANSI codepage, which fails on
