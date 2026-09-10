@@ -25,11 +25,42 @@ fn under(root: &str, p: &str) -> bool {
 /// Where the desktop app keeps its per-account state.
 #[cfg(target_os = "macos")]
 fn claude_dir() -> String { format!("{}/Library/Application Support/Claude", home()) }
+/// The Microsoft Store build of Claude runs in an MSIX container that silently
+/// redirects %APPDATA%\Claude to
+/// %LOCALAPPDATA%\Packages\Claude_<publisher>\LocalCache\Roaming\Claude.
+/// Only processes inside the package see the redirect, so a standalone Ferry
+/// finds %APPDATA%\Claude empty. Look in both; if more than one has chats,
+/// take the one written to most recently.
 #[cfg(target_os = "windows")]
 fn claude_dir() -> String {
-    std::env::var("APPDATA")
-        .map(|a| format!("{}\\Claude", a))
-        .unwrap_or_else(|_| format!("{}/AppData/Roaming/Claude", home()))
+    let appdata = std::env::var("APPDATA")
+        .unwrap_or_else(|_| format!("{}/AppData/Roaming", home()));
+    let local = std::env::var("LOCALAPPDATA")
+        .unwrap_or_else(|_| format!("{}/AppData/Local", home()));
+    let mut cands = vec![format!("{}\\Claude", appdata)];
+    if let Ok(rd) = fs::read_dir(format!("{}\\Packages", local)) {
+        let mut pkgs: Vec<String> = rd.flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("Claude_"))
+            .map(|e| format!("{}\\LocalCache\\Roaming\\Claude", e.path().display()))
+            .collect();
+        pkgs.sort();
+        cands.extend(pkgs);
+    }
+    let newest = |c: &String| -> Option<SystemTime> {
+        walkdir::WalkDir::new(format!("{}\\claude-code-sessions", c)).max_depth(3)
+            .into_iter().filter_map(|e| e.ok())
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy();
+                n.starts_with("local_") && n.ends_with(".json")
+            })
+            .filter_map(|e| e.metadata().ok()?.modified().ok())
+            .max()
+    };
+    cands.iter()
+        .filter(|c| Path::new(&format!("{}\\claude-code-sessions", c)).is_dir())
+        .max_by_key(|c| newest(c))
+        .cloned()
+        .unwrap_or_else(|| cands[0].clone())
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn claude_dir() -> String { format!("{}/.config/Claude", home()) }

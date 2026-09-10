@@ -15,9 +15,27 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HOME  = (os.environ.get("USERPROFILE") or os.path.expanduser("~")) \
         if sys.platform == "win32" else os.path.expanduser("~")
+
+def claude_dir_windows():
+    """The Microsoft Store build of Claude runs in an MSIX container that silently
+    redirects %APPDATA%\\Claude to
+    %LOCALAPPDATA%\\Packages\\Claude_<publisher>\\LocalCache\\Roaming\\Claude.
+    Only processes inside the package see the redirect, so a standalone Ferry
+    finds %APPDATA%\\Claude empty. Look in both; if more than one has chats,
+    take the one written to most recently."""
+    appdata = os.environ.get("APPDATA", os.path.join(HOME, "AppData", "Roaming"))
+    local   = os.environ.get("LOCALAPPDATA", os.path.join(HOME, "AppData", "Local"))
+    cands = [os.path.join(appdata, "Claude")] + sorted(glob.glob(
+        os.path.join(local, "Packages", "Claude_*", "LocalCache", "Roaming", "Claude")))
+    live = [c for c in cands if os.path.isdir(os.path.join(c, "claude-code-sessions"))]
+    if not live: return cands[0]
+    def newest(c):
+        recs = glob.glob(os.path.join(c, "claude-code-sessions", "*", "*", "local_*.json"))
+        return max((os.path.getmtime(f) for f in recs), default=-1)
+    return max(live, key=newest)
+
 if sys.platform == "win32":
-    CLAUDE = os.path.join(os.environ.get("APPDATA",
-                          os.path.join(HOME, "AppData", "Roaming")), "Claude")
+    CLAUDE = claude_dir_windows()
 elif sys.platform == "darwin":
     CLAUDE = f"{HOME}/Library/Application Support/Claude"
 else:
@@ -39,6 +57,12 @@ def under(root, p):
     a = os.path.normcase(os.path.normpath(root))
     b = os.path.normcase(os.path.normpath(p))
     return b == a or b.startswith(a + os.sep)
+
+def scope_of(f):
+    """(account, org) of a file at .../claude-code-sessions/<account>/<org>/<file>.
+    Split on the OS separator: glob on Windows joins with backslashes."""
+    parts = os.path.normpath(f).split(os.sep)
+    return parts[-3], parts[-2]
 
 def enc_cwd(p):
     """Current rule, taken from the shipped CLI: every non-alphanumeric -> '-'."""
@@ -81,7 +105,7 @@ def app_running():
     except Exception: return False
 
 def current_account():
-    try: return json.load(open(CFG)).get("lastKnownAccountUuid")
+    try: return json.load(open(CFG, encoding="utf-8")).get("lastKnownAccountUuid")
     except Exception: return None
 
 def export_dir():
@@ -126,7 +150,9 @@ def profiles():
     return found
 
 def read_rec(path):
-    try: return json.load(open(path))
+    # explicit utf-8: Windows defaults to the ANSI codepage, which fails on
+    # non-ASCII titles and silently drops the chat
+    try: return json.load(open(path, encoding="utf-8"))
     except Exception: return None
 
 def transcripts_for(rec):
@@ -151,7 +177,7 @@ def scan():
     cur, labs, profs = current_account(), labels(), profiles()
     scopes = {}
     for f in glob.glob(f"{SESS}/*/*/local_*.json"):
-        acct, org = f.split("/")[-3], f.split("/")[-2]
+        acct, org = scope_of(f)
         rec = read_rec(f)
         if not rec: continue
         key = f"{acct}|{org}"
@@ -175,7 +201,7 @@ def scan():
                 s["connectors"][m["name"]] = s["connectors"].get(m["name"],0)+1
         s["cwds"][rec.get("cwd","")] = s["cwds"].get(rec.get("cwd",""),0)+1
     for f in glob.glob(f"{SESS}/*/*/deleted_*"):
-        acct, org = f.split("/")[-3], f.split("/")[-2]
+        acct, org = scope_of(f)
         key = f"{acct}|{org}"
         s = scopes.setdefault(key, {"acct":acct,"org":org,"chats":[],"deleted":[],
                                     "connectors":{},"cwds":{},"isCurrent":acct==cur,
@@ -268,7 +294,7 @@ def op_vault():
     base  = f"{VAULT}/chats/{stamp}"; os.makedirs(base, exist_ok=True)
     n_rec = n_tr = 0; nbytes = 0
     for f in glob.glob(f"{SESS}/*/*/local_*.json"):
-        acct = f.split("/")[-3]
+        acct, _ = scope_of(f)
         d = f"{base}/{acct}"; os.makedirs(d, exist_ok=True)
         shutil.copy2(f, d); n_rec += 1
         rec = read_rec(f)
@@ -464,7 +490,7 @@ def op_export(path, fmt="md", **_):
     short = rec["sessionId"][len("local_"):][:8]
     d = export_dir(); os.makedirs(d, exist_ok=True)
     dest = f"{d}/{slug(rec.get('title','chat'))}-{short}.{ext}"
-    open(dest,"w").write(body)
+    open(dest,"w",encoding="utf-8").write(body)
     return {"ok": True, "file": dest, "dir": d, "name": os.path.basename(dest),
             "messages": len(msgs), "kb": round(os.path.getsize(dest)/1024)}
 
@@ -489,7 +515,7 @@ def cmd_export(query, fmt="md"):
     short = rec["sessionId"][len("local_"):][:8]
     d = export_dir(); os.makedirs(d, exist_ok=True)
     dest = f"{d}/{slug(rec.get('title','chat'))}-{short}.{ext}"
-    open(dest, "w").write(body)
+    open(dest, "w", encoding="utf-8").write(body)
     print(f"{len(msgs)} messages -> {dest}  ({os.path.getsize(dest)/1024:.0f} KB)")
 
 def cmd_list():
