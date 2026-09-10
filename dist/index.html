@@ -170,6 +170,27 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
  padding:6px 10px;border-radius:7px;font-size:12.5px}
 #ctx button:hover{background:var(--raise)}
 #ctx kbd{font:10.5px ui-monospace,"SF Mono",Menlo,monospace;color:var(--faint)}
+/* Windows: close button on an open chat, and the confirm card before a copy or move */
+#rhead.x{padding-right:64px}
+.xbtn{position:absolute;top:14px;right:22px;width:30px;height:30px;border:1px solid var(--line);border-radius:8px;
+ background:var(--panel);display:grid;place-items:center;color:var(--dim);transition:.13s}
+.xbtn:hover{color:var(--ink);border-color:var(--faint)}
+#ask{position:fixed;inset:0;display:none;place-items:center;background:var(--veil);z-index:46}
+#ask.on{display:grid}
+.askc{width:min(430px,calc(100vw - 40px));background:var(--panel);border:1px solid var(--line);border-radius:14px;
+ box-shadow:var(--sh);padding:20px 22px 16px}
+.askc h3{font-size:15px;font-weight:640;letter-spacing:-.01em}
+.askc .ct{margin-top:4px;color:var(--faint);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.route{display:flex;align-items:center;gap:10px;margin:14px 0 12px;padding:10px 12px;border:1px solid var(--line);
+ border-radius:10px;background:var(--bg);font-size:12.5px;font-weight:560}
+.route .who{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
+.route .who>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.route .arr{color:var(--accent);font-weight:700;flex:none}
+.askc p{color:var(--dim);font-size:12.5px;line-height:1.55}
+.askc p+p{margin-top:6px}
+.askc p b{color:var(--ink);font-weight:600}
+.askc .warn{color:var(--warn)}
+.askb{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
 </style></head><body>
 
 <div id=bar>
@@ -186,6 +207,7 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 </main>
 <div id=drop></div><div id=toast></div>
 <div id=ctx role=menu><button role=menuitem onclick=refresh()>Refresh <kbd>F5</kbd></button></div>
+<div id=ask></div>
 <div id=busy role=status aria-live=polite><div class=card><div id=bm></div><div class=msg id=bmsg></div></div></div>
 
 <script>
@@ -292,8 +314,45 @@ if(WIN){
   document.addEventListener("click",hideCtx);
   addEventListener("blur",hideCtx);
   document.addEventListener("keydown",e=>{
-    if(e.key==="Escape")hideCtx();
-    if(e.key==="F5"||(e.ctrlKey&&e.key.toLowerCase()==="r")){e.preventDefault();hideCtx();refresh();}});
+    if(e.key==="Escape"){hideCtx();closeAsk();}
+    if(e.key==="Enter"&&$("#ask").className){e.preventDefault();   // confirm: the focused card button, else the primary
+      const f=document.activeElement;(f&&f.tagName==="BUTTON"&&f.closest("#ask")?f:$("#ask .btn.p")).click();}
+    if(e.key==="F5"||(e.ctrlKey&&e.key.toLowerCase()==="r")){e.preventDefault();hideCtx();refresh();}
+    if(e.ctrlKey&&e.key.toLowerCase()==="w"){e.preventDefault();closeChat();}});
+}
+
+/* ---------- close and confirm (Windows) ---------- */
+function closeChat(){if(!chatPath)return;
+  const t=$("#ttl");if(t&&document.activeElement===t)t.blur();   // commit a half-typed title first
+  chatPath=null;drawList();drawRead(null);}
+const closeAsk=()=>{const a=$("#ask");a.className="";a.innerHTML="";};
+function chatAt(p){for(const s of S.scopes)for(const c of s.chats)if(c.path===p)return [s,c];return [];}
+function who(s){const nm=label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
+  return '<span class=who><span class=av style="background:hsl('+hue(s.acct)+' 42% 48%)">'+esc(ini)+
+    '</span><span>'+esc(nm)+'</span></span>';}
+// Say exactly what a copy or move will do before doing it. mv is true or
+// false from the buttons, or null after a drag, when the card offers both.
+function ask(p,t,mv){
+  const [s,c]=chatAt(p);if(!s||!t)return;
+  const from=esc(label(s)),to=esc(label(t)),a=$("#ask");
+  a.innerHTML='<div class=askc role=dialog aria-modal=true aria-labelledby=askh>'+
+    '<h3 id=askh>'+(mv===null?'Copy or move this chat?':mv?'Move this chat?':'Copy this chat?')+'</h3>'+
+    '<div class=ct>'+esc(c.title)+'</div>'+
+    '<div class=route>'+who(s)+'<span class=arr>→</span>'+who(t)+'</div>'+
+    (mv!==true?'<p><b>Copy</b> adds it to '+to+' and keeps it in '+from+'.</p>':'')+
+    (mv!==false?'<p><b>Move</b> adds it to '+to+' and removes it from '+from+
+      ', where you can restore it from the deleted list.</p>':'')+
+    '<p>Only the chat\'s small record changes; the conversation stays where it is, and a snapshot is saved first.</p>'+
+    (S.appRunning?'<p class=warn>Claude is open, so Ferry can\'t write yet. Quit Claude, then confirm.</p>':'')+
+    '<div class=askb><button class=btn id=an>Cancel</button>'+
+      (mv!==false?'<button class="btn'+(mv?' p':'')+'" id=am>Move</button>':'')+
+      (mv!==true?'<button class="btn p" id=ac>Copy</button>':'')+'</div></div>';
+  a.className="on";
+  $("#an").onclick=closeAsk;
+  a.onclick=e=>{if(e.target===a)closeAsk();};                  // a click outside the card cancels
+  if($("#am"))$("#am").onclick=()=>{closeAsk();send(p,t,true);};
+  if($("#ac"))$("#ac").onclick=()=>{closeAsk();send(p,t,false);};
+  a.querySelector(".btn.p").focus();                           // Enter confirms, Esc cancels
 }
 
 /* ---------- markdown ---------- */
@@ -445,6 +504,7 @@ function drawList(){
 function askDrop(e,k){
   const p=dragged;if(!p)return;
   const t=S.scopes.find(s=>key(s)===k),d=$("#drop");
+  if(WIN)return ask(p,t,null);
   d.style.left=Math.min(e.clientX,innerWidth-200)+"px";
   d.style.top=Math.min(e.clientY,innerHeight-56)+"px";
   d.className="on";
@@ -468,7 +528,10 @@ function drawRead(d){
     'Drag one onto an account in the sidebar to copy or move it.</div>';return;}
   const r=d.rec,others=S.scopes.filter(x=>key(x)!==scopeKey);
   $("#read").innerHTML=
-   '<div id=rhead>'+
+   '<div id=rhead'+(WIN?' class=x':'')+'>'+
+     (WIN?'<button class=xbtn onclick=closeChat() title="Close chat (Ctrl+W)" aria-label="Close chat">'+
+       '<svg width=12 height=12 viewBox="0 0 12 12" aria-hidden=true><path d="M2 2l8 8M10 2l-8 8" '+
+       'stroke=currentColor stroke-width=1.6 stroke-linecap=round /></svg></button>':'')+
      '<input id=ttl value="'+esc(r.title)+'" onchange=doRename()>'+
      '<div class=meta>'+esc((r.model||"").replace("claude-",""))+' · '+(r.completedTurns||0)+
        ' turns · '+day(r.createdAt)+' → '+day(r.lastActivityAt)+' · '+d.files.length+
@@ -515,7 +578,8 @@ async function doExport(){
 }
 const doRename=()=>op("rename_chat",{path:chatPath,title:$("#ttl").value},"Renamed","Renaming…");
 const doDelete=()=>op("delete_chat",{path:chatPath},"Deleted");
-function btnSend(mv){send(chatPath,S.scopes.find(x=>key(x)===$("#tgt").value),mv);}
+function btnSend(mv){const t=S.scopes.find(x=>key(x)===$("#tgt").value);
+  WIN?ask(chatPath,t,mv):send(chatPath,t,mv);}
 function send(path,t,mv){const done=(mv?"Moved to ":"Copied to ")+label(t);
   op("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv},done,
      (mv?"Moving to ":"Copying to ")+label(t)+"…",{now:true,min:650,cheer:true});}
