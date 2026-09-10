@@ -5,14 +5,14 @@
   --ink:#1f1e1d; --dim:#6b6a67; --faint:#9a978f; --line:#e5e2db;
   --accent:#d97757; --ok:#3d7a52; --warn:#a5713a; --user:#f0eee6;
   --code:#f5f3ee; --sh:0 1px 2px rgba(0,0,0,.03),0 6px 18px rgba(0,0,0,.05);
-  --veil:rgba(250,249,247,.62); --sea:#6f9fc2;
+  --veil:rgba(250,249,247,.8); --sea:#6f9fc2; --hull:#7b5b47;
 }
 @media(prefers-color-scheme:dark){:root{
   --bg:#1f1e1d; --side:#191817; --panel:#262624; --raise:#2b2a28;
   --ink:#f5f4ef; --dim:#a8a49c; --faint:#78746c; --line:#38352f;
   --accent:#d97757; --ok:#6fbf8b; --warn:#d4a05c; --user:#2f2e2b;
   --code:#1a1917; --sh:0 1px 2px rgba(0,0,0,.3),0 6px 18px rgba(0,0,0,.28);
-  --veil:rgba(31,30,29,.62); --sea:#5d8cb0;
+  --veil:rgba(31,30,29,.8); --sea:#5d8cb0; --hull:#8a6750;
 }
 .tools select{background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='9' height='6'><path d='M0 0h9L4.5 6z' fill='%23a8a49c'/></svg>")}}
 *{box-sizing:border-box;margin:0}
@@ -153,10 +153,10 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 .skacct .ln{flex:1;display:grid;gap:6px;padding-top:2px}
 .skrow{padding:10px}
 .loading{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;
- gap:12px;color:var(--faint);font-size:12.5px;padding-bottom:40px}
-.mascot{width:132px;height:auto;display:block}
+ gap:14px;color:var(--dim);font-size:13px;font-weight:500;padding-bottom:40px}
+.mascot{width:168px;height:auto;display:block}
 .mascot .clawd{fill:var(--accent);transition:transform .18s ease}
-.mascot .hull{fill:var(--dim)}
+.mascot .hull{fill:var(--hull)}
 .mascot .boat{transform-box:fill-box;transform-origin:50% 90%;animation:rock 2.4s ease-in-out infinite}
 .mascot .wave{fill:none;stroke:var(--sea);stroke-width:2.2;stroke-linecap:round;animation:wave 1.5s linear infinite}
 .mascot .wave.far{stroke-opacity:.4;animation-duration:2.3s;animation-direction:reverse}
@@ -164,9 +164,8 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 @keyframes wave{to{transform:translateX(-24px)}}
 #busy{position:fixed;inset:0;display:none;place-items:center;background:var(--veil);z-index:45}
 #busy.on{display:grid}
-#busy .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--sh);
- padding:18px 30px 16px;display:flex;flex-direction:column;align-items:center;gap:10px;min-width:230px}
-#busy .msg{font-size:12.5px;font-weight:500;max-width:300px;text-align:center;
+#busy .card{display:flex;flex-direction:column;align-items:center;gap:14px;padding-bottom:30px}
+#busy .msg{font-size:13.5px;font-weight:560;max-width:340px;text-align:center;
  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(prefers-reduced-motion:reduce){.sk,.mascot *{animation:none!important}}
 </style></head><body>
@@ -205,8 +204,9 @@ function toast(m,err){const t=$("#toast");t.textContent=m;t.className="on"+(err?
    Clawd on a ferry. The art is a grid of Unicode Block Elements, the medium
    mascot-maker (github.com/ahkamboh/mascot-maker) builds its characters from,
    and the poses are its clawd.html ones. Each glyph is split into its four
-   quadrants and drawn as SVG rects, so it looks the same whatever monospace
-   font the machine has. */
+   quadrants and drawn as SVG, so it looks the same whatever monospace font
+   the machine has. All of one part's quadrants go into a single <path>: one
+   shape is antialiased as a whole, so no hairline seams show between blocks. */
 const QUAD={"█":15,"▀":12,"▄":3,"▌":10,"▐":5,"▘":8,"▝":4,"▖":2,"▗":1,
             "▛":14,"▜":13,"▙":11,"▟":7,"▚":9,"▞":6};          // bits: 8 UL · 4 UR · 2 LL · 1 LR
 const POSE={idle: [" ▐▛███▜▌ ","▝▜█████▛▘"],
@@ -217,11 +217,11 @@ const HULL=["▜███████████▛"," ▜███████
 const BOB={idle:0,left:-1,right:-1,cheer:-5};                 // hop out of the boat on a cheer
 const SEQ=[["idle",900],["left",500],["idle",300],["right",500],["idle",300],["cheer",450],["idle",700]];
 const CW=6,CH=10;                                            // one glyph cell, in SVG units
-function blocks(rows,dx,dy){let o="";
+function blocks(rows,dx,dy){let d="";
   rows.forEach((r,y)=>[...r].forEach((g,x)=>{const b=QUAD[g]||0;
-    for(const [m,qx,qy] of [[8,0,0],[4,1,0],[2,0,1],[1,1,1]]) if(b&m)   // .3 overlap hides AA seams
-      o+='<rect x="'+((dx+x)*CW+qx*CW/2)+'" y="'+((dy+y)*CH+qy*CH/2)+'" width="3.3" height="5.3"/>';}));
-  return o;}
+    for(const [m,qx,qy] of [[8,0,0],[4,1,0],[2,0,1],[1,1,1]]) if(b&m)
+      d+="M"+((dx+x)*CW+qx*CW/2)+" "+((dy+y)*CH+qy*CH/2)+"h"+CW/2+"v"+CH/2+"h-"+CW/2+"z";}));
+  return '<path d="'+d+'"/>';}
 const WAVE=y=>"M-24 "+y+" q6 -3 12 0"+" t12 0".repeat(11);
 const mascot=()=>'<svg class=mascot viewBox="-6 -8 90 58" aria-hidden=true>'
   +'<path class="wave far" d="'+WAVE(45)+'"/>'
@@ -248,17 +248,17 @@ function drawSkeleton(){
   wake();
 }
 // One operation at a time: a second click while busy is ignored. The ferry
-// card appears only if the work outlasts a blink (or at once, with o.now), and
-// stays up long enough to read; o.done swaps in a cheer and the result.
+// appears only if the work outlasts a blink (or at once, with o.now) and stays
+// up long enough to read; cheer() swaps in the result the moment it lands.
 let busyOn=false;
+function cheer(msg){if(!$("#busy").className)return;
+  cheerUntil=Date.now()+700;paint("cheer");$("#bmsg").textContent=msg;}
 async function busy(msg,fn,o={}){
   if(busyOn)return;busyOn=true;
   const b=$("#busy");let shown=0;
   const t=setTimeout(()=>{$("#bm").innerHTML=mascot();$("#bmsg").textContent=msg;
     b.className="on";shown=Date.now();wake();},o.now?0:150);
-  try{const r=await fn();
-    if(shown&&o.done&&r&&r.ok){cheerUntil=Date.now()+700;paint("cheer");$("#bmsg").textContent=o.done;}
-    return r;}
+  try{return await fn();}
   finally{clearTimeout(t);
     if(shown){const left=Math.max((o.min||400)-(Date.now()-shown),cheerUntil-Date.now());
       if(left>0)await new Promise(z=>setTimeout(z,left));}
@@ -323,8 +323,9 @@ function md(src){
 const unesc=s=>String(s).replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/&amp;/g,"&");
 
 /* ---------- data ---------- */
-async function load(){
+async function load(hold){
   S=await iv("scan");
+  if(hold)await hold;
     $("#lock").innerHTML=S.appRunning?'<span class=lock title="Ferry will not write while the Claude app is running - quit Claude to enable editing">Claude is open · editing off</span>':'';
   if(!scopeKey||!S.scopes.find(s=>key(s)===scopeKey))scopeKey=S.scopes[0]&&key(S.scopes[0]);
   drawSide();
@@ -425,7 +426,11 @@ function askDrop(e,k){
 }
 
 async function openChat(p){chatPath=p;drawList();
-  try{drawRead(await iv("chat_detail",{path:p}));}catch(e){toast(String(e),true);}}
+  // a long transcript takes a moment to read: show the ferry rather than a stale chat
+  const t=setTimeout(()=>{$("#read").innerHTML='<div class=loading>'+mascot()+'<div>Opening chat…</div></div>';wake();},120);
+  try{const d=await iv("chat_detail",{path:p});clearTimeout(t);
+    if(chatPath===p)drawRead(d);}                // a later click wins over a slow earlier one
+  catch(e){clearTimeout(t);toast(String(e),true);}}
 
 function drawRead(d){
   if(!d){$("#read").innerHTML='<div class=empty>Select a conversation.<br>'+
@@ -464,6 +469,7 @@ async function op(cmd,args,ok,msg,o){
   const run=async()=>{
   try{const r=await iv(cmd,args);
     if(r&&r.cancelled){toast("Cancelled");return r;}
+    if(o&&o.cheer)cheer(ok);
     toast(ok);await load();
     if(chatPath&&cmd!=="delete_chat"){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){drawRead(null);}}
     else drawRead(null);return r;}
@@ -481,14 +487,14 @@ const doDelete=()=>op("delete_chat",{path:chatPath},"Deleted");
 function btnSend(mv){send(chatPath,S.scopes.find(x=>key(x)===$("#tgt").value),mv);}
 function send(path,t,mv){const done=(mv?"Moved to ":"Copied to ")+label(t);
   op("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv},done,
-     (mv?"Moving to ":"Copying to ")+label(t)+"…",{now:true,min:650,done:done});}
+     (mv?"Moving to ":"Copying to ")+label(t)+"…",{now:true,min:650,cheer:true});}
 const undel=id=>{const s=scope();op("undelete_chat",{acct:s.acct,org:s.org,id:id},"Restored","Restoring…");};
 const setLabel=(a,v)=>op("set_label",{acct:a,name:v},"Saved");
 const vault=()=>busy("Backing up every chat…",async()=>{
   try{const r=await iv("run_vault");
     toast("Backed up "+r.records+" chats · "+r.transcripts+" new files · "+r.mb+" MB");}
   catch(e){toast(String(e),true);}},{now:true});
-drawSkeleton();
-load().then(()=>{if(S.scopes.length)drawRead(null);})
+drawSkeleton();           // held at least 700 ms so a fast scan reads as loading, not a flicker
+load(new Promise(z=>setTimeout(z,700))).then(()=>{if(S.scopes.length)drawRead(null);})
       .catch(e=>{$("#read").innerHTML='<div class=empty style="color:var(--warn)">'+esc(e)+'</div>';});
 </script></body></html>
