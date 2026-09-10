@@ -197,18 +197,28 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 .askc p b{color:var(--ink);font-weight:600}
 .askc .warn{color:var(--warn)}
 .askb{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
-/* Windows: "Send to [account] - Copy / Move" in the chat header */
-.sendg{display:inline-flex;align-items:center;gap:3px;padding:3px;border:1px solid var(--line);border-radius:11px;
- background:var(--side)}
+/* Windows: "Send to [account ⌄] | Copy·Move" in the chat header - a field that
+   reads as a dropdown, a divider, then a two-way switch */
+.sendg{display:inline-flex;align-items:center;gap:10px}
 .sendg .cap{font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);
- padding:0 5px 0 8px;white-space:nowrap}
-.sendg .btn{height:28px;border-color:transparent}
-.sendg .btn:not(.p){background:transparent}
-.sendg .btn:not(.p):hover{background:var(--panel);border-color:var(--line)}
-.pick{gap:7px;padding:0 9px 0 4px;max-width:210px;font-weight:600}
-.pick>span:not(.av){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ white-space:nowrap}
+.pick{height:32px;min-width:160px;max-width:230px;display:inline-flex;align-items:center;gap:8px;padding:0 9px 0 5px;
+ border:1px solid var(--line);border-radius:9px;background:var(--bg);font-size:12.5px;font-weight:600;transition:.13s}
+.pick:hover,.pick[aria-expanded=true]{border-color:var(--faint);background:var(--panel)}
+.pick>span:not(.av){flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pick svg{flex:none;color:var(--dim);transition:transform .15s}
+.pick[aria-expanded=true] svg{transform:rotate(180deg)}
 .pick .av,#pmenu .av{width:20px;height:20px;font-size:9.5px;border-radius:6px}
-.pick .car{font-style:normal;color:var(--faint);font-size:10px}
+.sendg .sep{width:1px;height:22px;background:var(--line)}
+.seg{position:relative;display:inline-grid;grid-template-columns:1fr 1fr;padding:3px;border:1px solid var(--line);
+ border-radius:10px;background:var(--side)}
+.seg .thumb{position:absolute;top:3px;bottom:3px;left:3px;width:calc(50% - 3px);border-radius:7px;
+ background:var(--accent);transition:transform .2s ease}
+.seg[data-v=move] .thumb{transform:translateX(100%)}
+.seg button{position:relative;height:26px;padding:0 18px;border-radius:7px;font-size:12px;font-weight:600;
+ color:var(--dim);transition:color .2s}
+.seg button.on{color:#fff}
+.seg button:not(.on):hover{color:var(--ink)}
 .nosend{font-size:12px;color:var(--faint)}
 #pmenu{position:fixed;display:none;min-width:210px;background:var(--panel);border:1px solid var(--line);
  border-radius:10px;box-shadow:var(--sh);padding:4px;z-index:40}
@@ -384,7 +394,8 @@ if(WIN){
     e.preventDefault();const m=$("#ctx");m.className="on";
     m.style.left=Math.min(e.clientX,innerWidth-m.offsetWidth-8)+"px";
     m.style.top=Math.min(e.clientY,innerHeight-m.offsetHeight-8)+"px";});
-  const hideMenus=()=>{hideCtx();$("#pmenu").className="";};
+  const hideMenus=()=>{hideCtx();$("#pmenu").className="";
+    const p=$("#pick");if(p)p.setAttribute("aria-expanded","false");};
   document.addEventListener("click",hideMenus);
   addEventListener("blur",hideMenus);
   document.addEventListener("keydown",e=>{
@@ -410,23 +421,35 @@ function who(s,id){
   return '<span class=who id='+id+' title="'+esc(whoTip(s))+'">'+avatar(s)+'<span>'+esc(short(s))+'</span></span>';}
 
 /* ---------- send to (Windows) ----------
-   The chat header's copy/move row reads as one phrase: Send to [account] -
-   Copy / Move. The picker shows each account's badge and short name, marks the
-   signed-in one, and remembers the choice from chat to chat. */
-let tgtKey=null,curD=null;
+   The chat header's copy/move row: "Send to" [account ⌄] | Copy·Move. The
+   account field opens a list with each account's badge and short name, marks
+   the signed-in one, and remembers the choice from chat to chat. Copy/Move is
+   a switch: pressing a side slides to it and opens the confirm card at once;
+   it stays on the last one used. */
+let tgtKey=null,curD=null,sendMv=false;
+const CHEVRON='<svg width=12 height=12 viewBox="0 0 12 12" aria-hidden=true><path d="M3 4.5l3 3 3-3" fill=none '+
+  'stroke=currentColor stroke-width=1.6 stroke-linecap=round stroke-linejoin=round /></svg>';
 function sendGroup(others){
   if(!others.length)return '<span class=nosend>Sign in to another account in Claude to copy chats to it.</span>';
   if(!others.some(x=>key(x)===tgtKey))tgtKey=key(others[0]);
   const t=others.find(x=>key(x)===tgtKey),to=esc(short(t));
   return '<span class=sendg><span class=cap>Send to</span>'+
-    '<button class="btn pick" id=pick onclick="pickMenu(event)" title="'+esc(whoTip(t))+'" aria-haspopup=menu>'+
-      avatar(t)+'<span>'+to+'</span><i class=car>▾</i></button>'+
-    '<button class="btn p" onclick=btnSend(false) title="Add it to '+to+' and keep it here">Copy</button>'+
-    '<button class=btn onclick=btnSend(true) title="Move it to '+to+'. You can restore it here from the deleted list.">Move</button></span>';
+    '<button class=pick id=pick onclick="pickMenu(event)" title="'+esc(whoTip(t))+
+      '" aria-haspopup=listbox aria-expanded=false>'+avatar(t)+'<span>'+to+'</span>'+CHEVRON+'</button>'+
+    '<span class=sep></span>'+
+    '<span class=seg data-v='+(sendMv?'move':'copy')+' role=group aria-label="Copy or move"><span class=thumb></span>'+
+      '<button'+(sendMv?'':' class=on')+' onclick=flip(false) title="Add it to '+to+' and keep it here">Copy</button>'+
+      '<button'+(sendMv?' class=on':'')+' onclick=flip(true) title="Move it to '+to+
+        '. You can restore it here from the deleted list.">Move</button></span></span>';
 }
+function flip(mv){sendMv=mv;const s=$(".seg");s.dataset.v=mv?"move":"copy";
+  s.querySelectorAll("button").forEach((b,i)=>b.classList.toggle("on",i===(mv?1:0)));
+  setTimeout(()=>btnSend(mv),160);}              // let the switch land, then the card
 function pickMenu(e){e.stopPropagation();
-  const m=$("#pmenu");if(m.className){m.className="";return;}
-  const b=$("#pick").getBoundingClientRect();
+  const m=$("#pmenu"),p=$("#pick");
+  if(m.className){m.className="";p.setAttribute("aria-expanded","false");return;}
+  p.setAttribute("aria-expanded","true");
+  const b=p.getBoundingClientRect();
   m.innerHTML=S.scopes.filter(x=>key(x)!==scopeKey).map(x=>
     '<button class=mi role=menuitem data-k="'+esc(key(x))+'" title="'+esc(whoTip(x))+'">'+avatar(x)+
     '<span>'+esc(short(x))+'</span>'+(x.isCurrent?'<em>signed in</em>':'')+
