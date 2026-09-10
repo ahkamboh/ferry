@@ -172,9 +172,12 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 #ctx kbd{font:10.5px ui-monospace,"SF Mono",Menlo,monospace;color:var(--faint)}
 /* Windows: close button on an open chat, and the confirm card before a copy or move */
 #rhead.x{padding-right:64px}
-.xbtn{position:absolute;top:14px;right:22px;width:30px;height:30px;border:1px solid var(--line);border-radius:8px;
+.xbtn{position:absolute;top:20px;right:22px;width:30px;height:30px;border:1px solid var(--line);border-radius:8px;
  background:var(--panel);display:grid;place-items:center;color:var(--dim);transition:.13s}
 .xbtn:hover{color:var(--ink);border-color:var(--faint)}
+.trow{display:flex;align-items:center;gap:12px}                  /* title | Markdown · Download · Delete */
+.trow #ttl{flex:1;min-width:0;width:auto;margin:0 0 0 -7px}
+.trow .fops{margin-top:0;flex:none;flex-wrap:nowrap}
 #ask{position:fixed;inset:0;display:none;place-items:center;background:var(--veil);z-index:46}
 #ask.on{display:grid}
 .askc{width:min(470px,calc(100vw - 40px));background:var(--panel);border:1px solid var(--line);border-radius:14px;
@@ -671,26 +674,30 @@ function drawRead(d){
   const meta=esc((r.model||"").replace("claude-",""))+' · '+(r.completedTurns||0)+
        ' turns · '+day(r.createdAt)+' → '+day(r.lastActivityAt)+' · '+d.files.length+
        ' transcripts · '+fmt(d.bytes)+(d.subs?' · '+d.subs+' subagent':'');
-  $("#read").innerHTML=
-   '<div id=rhead'+(WIN?' class=x':'')+'>'+
-     (WIN?'<button class=xbtn onclick=closeChat() title="Close chat (Ctrl+W)" aria-label="Close chat">'+
-       '<svg width=12 height=12 viewBox="0 0 12 12" aria-hidden=true><path d="M2 2l8 8M10 2l-8 8" '+
-       'stroke=currentColor stroke-width=1.6 stroke-linecap=round /></svg></button>':'')+
-     '<input id=ttl value="'+esc(r.title)+'" onchange=doRename()'+(WIN?' title="'+meta+'"':'')+'>'+
-     (WIN?'':'<div class=meta>'+meta+'</div>')+                  // Windows: the details live in the title's tooltip
-     '<div class=tools>'+
-       (WIN?sendGroup(others):
-        others.length?'<select id=tgt>'+others.map(x=>'<option value="'+key(x)+'">'+esc(label(x))+'</option>').join("")+
-        '</select><button class="btn p" onclick=btnSend(false)>Copy →</button>'+
-        '<button class=btn onclick=btnSend(true)>Move →</button>':'')+
-       '<span style="flex:1"></span>'+
+  const ttl='<input id=ttl value="'+esc(r.title)+'" onchange=doRename()'+(WIN?' title="'+meta+'"':'')+'>';
+  const fileops=
        '<select id=fmt title="File format for the download">'+
          '<option value=md>Markdown</option><option value=txt>Plain text</option>'+
          '<option value=json>JSON</option></select>'+
        '<button class=btn onclick=doExport() title="Choose where to save the whole conversation. Currently defaults to '+
          esc((S.exportDir||"~/Downloads").replace(/^\/Users\/[^\/]+/,"~"))+'">Download</button>'+
-       '<button class="btn d" onclick=doDelete()>Delete</button>'+
-     '</div></div>'+
+       '<button class="btn d" onclick=doDelete()>Delete</button>';
+  $("#read").innerHTML=
+   '<div id=rhead'+(WIN?' class=x':'')+'>'+
+     (WIN?'<button class=xbtn onclick=closeChat() title="Close chat (Ctrl+W)" aria-label="Close chat">'+
+       '<svg width=12 height=12 viewBox="0 0 12 12" aria-hidden=true><path d="M2 2l8 8M10 2l-8 8" '+
+       'stroke=currentColor stroke-width=1.6 stroke-linecap=round /></svg></button>'+
+       // Windows: the file actions share the title's row (the details live in its
+       // tooltip), and the row below is only about sending the chat
+       '<div class=trow>'+ttl+'<span class="tools fops">'+fileops+'</span></div>'+
+       '<div class=tools>'+sendGroup(others)+'</div>'
+     :ttl+'<div class=meta>'+meta+'</div>'+
+       '<div class=tools>'+
+       (others.length?'<select id=tgt>'+others.map(x=>'<option value="'+key(x)+'">'+esc(label(x))+'</option>').join("")+
+        '</select><button class="btn p" onclick=btnSend(false)>Copy →</button>'+
+        '<button class=btn onclick=btnSend(true)>Move →</button>':'')+
+       '<span style="flex:1"></span>'+fileops+'</div>')+
+     '</div>'+
    '<div id=body>'+(d.msgs.length?d.msgs.map(m=>
      '<div class="turn '+m.role+'">'+
        '<div class=who2>'+(m.role==="user"?"You":"Claude")+' · '+m.t.replace("T"," ")+'</div>'+
