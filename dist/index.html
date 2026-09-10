@@ -377,28 +377,25 @@ const whoTip=s=>label(s)+"\nAccount "+s.acct.slice(0,8)+(s.isCurrent?" · signed
 function who(s,id){const nm=label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
   return '<span class=who id='+id+' title="'+esc(whoTip(s))+'"><span class=av style="background:hsl('+
     hue(s.acct)+' 42% 48%)">'+esc(ini)+'</span><span>'+esc(short(s))+'</span></span>';}
-// Say exactly what a copy or move will do before doing it. mv is true or
-// false from the buttons, or null after a drag, when the card offers both.
+// Confirm one chosen action - the choice itself is made before this, with the
+// Copy/Move buttons or the drop menu - and say exactly what it will do.
 function ask(p,t,mv){
   const [s,c]=chatAt(p);if(!s||!t)return;
   const from=esc(short(s)),to=esc(short(t)),a=$("#ask");
   a.innerHTML='<div class=askc role=dialog aria-modal=true aria-labelledby=askh>'+
-    '<h3 id=askh>'+(mv===null?'Copy or move this chat?':mv?'Move this chat?':'Copy this chat?')+'</h3>'+
+    '<h3 id=askh>'+(mv?'Move this chat?':'Copy this chat?')+'</h3>'+
     '<div class=ct>'+esc(c.title)+'</div>'+
     '<div class=route>'+who(s,"tfrom")+mascot()+who(t,"tto")+'</div>'+   // the trip it is about to make
-    (mv!==true?'<p><b>Copy</b> adds it to '+to+' and keeps it in '+from+'.</p>':'')+
-    (mv!==false?'<p><b>Move</b> adds it to '+to+' and removes it from '+from+
-      ', where you can restore it from the deleted list.</p>':'')+
+    (mv?'<p>It moves to '+to+' and leaves '+from+', where you can restore it from the deleted list.</p>'
+       :'<p>It is added to '+to+' and stays in '+from+'.</p>')+
     (S.appRunning?'<p class=warn>Claude is open, so Ferry can\'t write yet. Quit Claude, then confirm.</p>':'')+
     '<div class=askb><button class=btn id=an>Cancel</button>'+
-      (mv!==false?'<button class="btn'+(mv?' p':'')+'" id=am>Move</button>':'')+
-      (mv!==true?'<button class="btn p" id=ac>Copy</button>':'')+'</div></div>';
+      '<button class="btn p" id=ago>'+(mv?'Move':'Copy')+'</button></div></div>';
   a.className="on";wake();
   $("#an").onclick=closeAsk;
   a.onclick=e=>{if(e.target===a)closeAsk();};                  // a click outside the card cancels
-  if($("#am"))$("#am").onclick=()=>send(p,t,true);             // the card stays: transfer() runs in it
-  if($("#ac"))$("#ac").onclick=()=>send(p,t,false);
-  a.querySelector(".btn.p").focus();                           // Enter confirms, Esc cancels
+  $("#ago").onclick=()=>send(p,t,mv);                          // the card stays: transfer() runs in it
+  $("#ago").focus();                                           // Enter confirms, Esc cancels
 }
 
 /* ---------- markdown ---------- */
@@ -562,14 +559,14 @@ function drawList(){
 function askDrop(e,k){
   const p=dragged;if(!p)return;
   const t=S.scopes.find(s=>key(s)===k),d=$("#drop");
-  if(WIN)return ask(p,t,null);
   d.style.left=Math.min(e.clientX,innerWidth-200)+"px";
   d.style.top=Math.min(e.clientY,innerHeight-56)+"px";
   d.className="on";
   d.innerHTML='<button class="btn p" id=dc>Copy here</button><button class=btn id=dm>Move here</button>';
   const close=()=>d.className="";
-  $("#dc").onclick=()=>{close();send(p,t,false);};
-  $("#dm").onclick=()=>{close();send(p,t,true);};
+  const go=mv=>WIN?ask(p,t,mv):send(p,t,mv);                   // Windows confirms the choice first
+  $("#dc").onclick=()=>{close();go(false);};
+  $("#dm").onclick=()=>{close();go(true);};
   setTimeout(()=>document.addEventListener("click",close,{once:true}),0);
 }
 
