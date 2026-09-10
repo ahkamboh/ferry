@@ -191,6 +191,15 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 .askc p b{color:var(--ink);font-weight:600}
 .askc .warn{color:var(--warn)}
 .askb{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.trip{display:flex;align-items:center;gap:14px}
+.trip .cap{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);font-weight:700;margin:0 0 5px 2px}
+.trip .mascot{width:92px;flex:none}
+.acchip{display:flex;max-width:190px;padding:6px 11px 6px 6px;border:1px solid var(--line);border-radius:10px;
+ background:var(--panel);font-size:12px;font-weight:560;transition:opacity .3s,border-color .3s}
+.acchip .who{display:flex;align-items:center;gap:8px;min-width:0}
+.acchip .who>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acchip.in{border-color:var(--accent)}
+.acchip.out{opacity:.45}
 </style></head><body>
 
 <div id=bar>
@@ -260,12 +269,13 @@ for(let i=0;i<3;i++)SEQ.push({});
 const HAPPY={happy:1};                            // the payoff: saved on the other side
 const mascot=()=>'<svg class=mascot viewBox="-1 -3 24 27" shape-rendering=crispEdges aria-hidden=true>'
   +drawMascot(SEQ[0])+'</svg>';
-let seqI=0,seqT=null,cheerUntil=0;
+let seqI=0,seqT=null;
 const still=matchMedia("(prefers-reduced-motion: reduce)").matches;
-function paint(f){document.querySelectorAll(".mascot").forEach(e=>e.innerHTML=drawMascot(f));}
-function tick(){                                  // runs only while a mascot is on screen
-  if(!document.querySelector(".mascot")){seqT=null;return;}
-  paint(Date.now()<cheerUntil?HAPPY:SEQ[seqI++%SEQ.length]);seqT=setTimeout(tick,110);}
+const IDLE=".mascot:not(.own)";                   // .own mascots are driven by transfer()
+function paint(f){document.querySelectorAll(IDLE).forEach(e=>e.innerHTML=drawMascot(f));}
+function tick(){                                  // runs only while an idle mascot is on screen
+  if(!document.querySelector(IDLE)){seqT=null;return;}
+  paint(SEQ[seqI++%SEQ.length]);seqT=setTimeout(tick,110);}
 const wake=()=>{if(!seqT&&!still)seqT=setTimeout(tick,0);};
 
 /* ---------- loading ---------- */
@@ -281,10 +291,8 @@ function drawSkeleton(){
 }
 // One operation at a time: a second click while busy is ignored. The mascot
 // appears only if the work outlasts a blink (or at once, with o.now) and stays
-// up long enough to read; cheer() swaps in the result the moment it lands.
+// up long enough to read.
 let busyOn=false;
-function cheer(msg){if(!$("#busy").className)return;
-  cheerUntil=Date.now()+700;paint(HAPPY);$("#bmsg").textContent=msg;}
 async function busy(msg,fn,o={}){
   if(busyOn)return;busyOn=true;
   const b=$("#busy");let shown=0;
@@ -292,9 +300,45 @@ async function busy(msg,fn,o={}){
     b.className="on";shown=Date.now();wake();},o.now?0:150);
   try{return await fn();}
   finally{clearTimeout(t);
-    if(shown){const left=Math.max((o.min||400)-(Date.now()-shown),cheerUntil-Date.now());
+    if(shown){const left=(o.min||400)-(Date.now()-shown);
       if(left>0)await new Promise(z=>setTimeout(z,left));}
     b.className="";busyOn=false;}
+}
+
+/* ---------- transfer (Windows) ----------
+   Copy or move with the mascot between the two accounts: from-chip, mascot,
+   to-chip. The chat always makes at least one full trip, even when the write
+   lands at once; a slow write keeps it making trips, and the cheer follows
+   the trip that finds the write done. A failed write stops the animation at
+   once, so a refusal never looks like a success. */
+const LOOK=[{look:1},{look:1},{look:1}],TRIP=[],CHEER=Array(7).fill(HAPPY);
+for(let i=0;i<=11;i++)TRIP.push({look:1,cargo:i/11});
+const chip=(s,id)=>'<span class=acchip id='+id+'>'+who(s)+'</span>';
+async function transfer(path,t,mv){
+  if(busyOn)return;busyOn=true;
+  const [s=scope()]=chatAt(path),b=$("#busy"),ok=(mv?"Moved to ":"Copied to ")+label(t);
+  let err=null,landed=false;
+  try{
+    $("#bm").innerHTML='<div class=trip><div><div class=cap>from</div>'+chip(s,"tfrom")+'</div>'+
+      mascot().replace("class=mascot","class='mascot own'")+
+      '<div><div class=cap>to</div>'+chip(t,"tto")+'</div></div>';
+    $("#bmsg").textContent=(mv?"Moving to ":"Copying to ")+label(t)+"…";b.className="on";
+    const m=$("#bm .own"),play=fs=>new Promise(z=>{let i=0;(function f(){
+      if(i>=fs.length||err)return z();m.innerHTML=drawMascot(fs[i++]);setTimeout(f,110);})();});
+    const work=iv("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv})
+      .then(()=>{},e=>{err=String(e);}).finally(()=>{landed=true;});
+    if(still)await work;
+    else{await play(LOOK);do{await play(TRIP);}while(!landed&&!err);}
+    await work;
+    if(err)return toast(err,true);
+    $("#bmsg").textContent=ok;$("#tto").classList.add("in");if(mv)$("#tfrom").classList.add("out");
+    await Promise.all([                            // cheer while the lists redraw behind the card
+      still?(m.innerHTML=drawMascot(HAPPY),new Promise(z=>setTimeout(z,700))):play(CHEER),
+      (async()=>{await load();
+        if(chatPath){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){drawRead(null);}}
+        else drawRead(null);})()]);
+    toast(ok);
+  }finally{b.className="";busyOn=false;}
 }
 // The loading states, busy card and right-click menu are Windows-only (WIN);
 // on macOS every path below falls through to the original behaviour.
@@ -563,7 +607,6 @@ async function op(cmd,args,ok,msg,o){
   const run=async()=>{
   try{const r=await iv(cmd,args);
     if(r&&r.cancelled){toast("Cancelled");return r;}
-    if(o&&o.cheer)cheer(ok);
     toast(ok);await load();
     if(chatPath&&cmd!=="delete_chat"){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){drawRead(null);}}
     else drawRead(null);return r;}
@@ -580,9 +623,9 @@ const doRename=()=>op("rename_chat",{path:chatPath,title:$("#ttl").value},"Renam
 const doDelete=()=>op("delete_chat",{path:chatPath},"Deleted");
 function btnSend(mv){const t=S.scopes.find(x=>key(x)===$("#tgt").value);
   WIN?ask(chatPath,t,mv):send(chatPath,t,mv);}
-function send(path,t,mv){const done=(mv?"Moved to ":"Copied to ")+label(t);
-  op("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv},done,
-     (mv?"Moving to ":"Copying to ")+label(t)+"…",{now:true,min:650,cheer:true});}
+function send(path,t,mv){if(WIN)return transfer(path,t,mv);
+  op("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv},
+  (mv?"Moved to ":"Copied to ")+label(t));}
 const undel=id=>{const s=scope();op("undelete_chat",{acct:s.acct,org:s.org,id:id},"Restored","Restoring…");};
 const setLabel=(a,v)=>op("set_label",{acct:a,name:v},"Saved");
 async function backup(){
