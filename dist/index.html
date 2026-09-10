@@ -194,6 +194,28 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 .askc p b{color:var(--ink);font-weight:600}
 .askc .warn{color:var(--warn)}
 .askb{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+/* Windows: "Send to [account] - Copy / Move" in the chat header */
+.sendg{display:inline-flex;align-items:center;gap:3px;padding:3px;border:1px solid var(--line);border-radius:11px;
+ background:var(--side)}
+.sendg .cap{font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);
+ padding:0 5px 0 8px;white-space:nowrap}
+.sendg .btn{height:28px;border-color:transparent}
+.sendg .btn:not(.p){background:transparent}
+.sendg .btn:not(.p):hover{background:var(--panel);border-color:var(--line)}
+.pick{gap:7px;padding:0 9px 0 4px;max-width:210px;font-weight:600}
+.pick>span:not(.av){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pick .av,#pmenu .av{width:20px;height:20px;font-size:9.5px;border-radius:6px}
+.pick .car{font-style:normal;color:var(--faint);font-size:10px}
+.nosend{font-size:12px;color:var(--faint)}
+#pmenu{position:fixed;display:none;min-width:210px;background:var(--panel);border:1px solid var(--line);
+ border-radius:10px;box-shadow:var(--sh);padding:4px;z-index:40}
+#pmenu.on{display:block}
+#pmenu .mi{display:flex;width:100%;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;font-size:12.5px;
+ font-weight:560;text-align:left}
+#pmenu .mi:hover{background:var(--raise)}
+#pmenu em{margin-left:auto;font-style:normal;font-size:10.5px;color:var(--faint);font-weight:500}
+#pmenu b{margin-left:auto;color:var(--accent)}
+#pmenu em+b{margin-left:8px}
 .route .who{transition:opacity .3s}
 .route .who.in>span:last-child{color:var(--accent)}             /* where the chat landed */
 .route #tto.in{border-color:var(--accent);background:rgba(217,119,87,.12)}
@@ -215,6 +237,7 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 </main>
 <div id=drop></div><div id=toast></div>
 <div id=ctx role=menu><button role=menuitem onclick=refresh()>Refresh <kbd>F5</kbd></button></div>
+<div id=pmenu role=menu></div>
 <div id=ask></div>
 <div id=busy role=status aria-live=polite><div class=card><div id=bm></div><div class=msg id=bmsg></div></div></div>
 
@@ -358,10 +381,11 @@ if(WIN){
     e.preventDefault();const m=$("#ctx");m.className="on";
     m.style.left=Math.min(e.clientX,innerWidth-m.offsetWidth-8)+"px";
     m.style.top=Math.min(e.clientY,innerHeight-m.offsetHeight-8)+"px";});
-  document.addEventListener("click",hideCtx);
-  addEventListener("blur",hideCtx);
+  const hideMenus=()=>{hideCtx();$("#pmenu").className="";};
+  document.addEventListener("click",hideMenus);
+  addEventListener("blur",hideMenus);
   document.addEventListener("keydown",e=>{
-    if(e.key==="Escape"){hideCtx();if(!busyOn)closeAsk();}          // a card mid-trip stays up
+    if(e.key==="Escape"){hideMenus();if(!busyOn)closeAsk();}        // a card mid-trip stays up
     if(e.key==="Enter"&&$("#ask").className&&!busyOn){e.preventDefault();   // confirm: the focused card button, else the primary
       const f=document.activeElement;(f&&f.tagName==="BUTTON"&&f.closest("#ask")?f:$("#ask .btn.p")).click();}
     if(e.key==="F5"||(e.ctrlKey&&e.key.toLowerCase()==="r")){e.preventDefault();hideCtx();refresh();}
@@ -377,9 +401,36 @@ function chatAt(p){for(const s of S.scopes)for(const c of s.chats)if(c.path===p)
 // The card names an account by the part before the @; hovering shows the rest.
 const short=s=>label(s).split("@")[0];
 const whoTip=s=>label(s)+"\nAccount "+s.acct.slice(0,8)+(s.isCurrent?" · signed in now":"");
-function who(s,id){const nm=label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
-  return '<span class=who id='+id+' title="'+esc(whoTip(s))+'"><span class=av style="background:hsl('+
-    hue(s.acct)+' 42% 48%)">'+esc(ini)+'</span><span>'+esc(short(s))+'</span></span>';}
+const avatar=s=>'<span class=av style="background:hsl('+hue(s.acct)+' 42% 48%)">'+
+  esc(((s.profile&&s.profile.name)||label(s)).slice(0,2).toUpperCase())+'</span>';
+function who(s,id){
+  return '<span class=who id='+id+' title="'+esc(whoTip(s))+'">'+avatar(s)+'<span>'+esc(short(s))+'</span></span>';}
+
+/* ---------- send to (Windows) ----------
+   The chat header's copy/move row reads as one phrase: Send to [account] -
+   Copy / Move. The picker shows each account's badge and short name, marks the
+   signed-in one, and remembers the choice from chat to chat. */
+let tgtKey=null,curD=null;
+function sendGroup(others){
+  if(!others.length)return '<span class=nosend>Sign in to another account in Claude to copy chats to it.</span>';
+  if(!others.some(x=>key(x)===tgtKey))tgtKey=key(others[0]);
+  const t=others.find(x=>key(x)===tgtKey),to=esc(short(t));
+  return '<span class=sendg><span class=cap>Send to</span>'+
+    '<button class="btn pick" id=pick onclick="pickMenu(event)" title="'+esc(whoTip(t))+'" aria-haspopup=menu>'+
+      avatar(t)+'<span>'+to+'</span><i class=car>▾</i></button>'+
+    '<button class="btn p" onclick=btnSend(false) title="Add it to '+to+' and keep it here">Copy</button>'+
+    '<button class=btn onclick=btnSend(true) title="Move it to '+to+'. You can restore it here from the deleted list.">Move</button></span>';
+}
+function pickMenu(e){e.stopPropagation();
+  const m=$("#pmenu");if(m.className){m.className="";return;}
+  const b=$("#pick").getBoundingClientRect();
+  m.innerHTML=S.scopes.filter(x=>key(x)!==scopeKey).map(x=>
+    '<button class=mi role=menuitem data-k="'+esc(key(x))+'" title="'+esc(whoTip(x))+'">'+avatar(x)+
+    '<span>'+esc(short(x))+'</span>'+(x.isCurrent?'<em>signed in</em>':'')+
+    (key(x)===tgtKey?'<b>✓</b>':'')+'</button>').join("");
+  m.style.left=b.left+"px";m.style.top=(b.bottom+4)+"px";m.className="on";
+  m.querySelectorAll(".mi").forEach(x=>x.onclick=()=>{tgtKey=x.dataset.k;m.className="";drawRead(curD);});
+}
 // The last step before a copy or move. From the Copy/Move buttons it confirms
 // that one action; after a drag (mv null) it offers both, since the drop
 // itself chose only the destination. Either way it says what will happen.
@@ -589,18 +640,20 @@ async function openChat(p){chatPath=p;drawList();
 function drawRead(d){
   if(!d){$("#read").innerHTML='<div class=empty>Select a conversation.<br>'+
     'Drag one onto an account in the sidebar to copy or move it.</div>';return;}
-  const r=d.rec,others=S.scopes.filter(x=>key(x)!==scopeKey);
+  const r=d.rec,others=S.scopes.filter(x=>key(x)!==scopeKey);curD=d;
+  const meta=esc((r.model||"").replace("claude-",""))+' · '+(r.completedTurns||0)+
+       ' turns · '+day(r.createdAt)+' → '+day(r.lastActivityAt)+' · '+d.files.length+
+       ' transcripts · '+fmt(d.bytes)+(d.subs?' · '+d.subs+' subagent':'');
   $("#read").innerHTML=
    '<div id=rhead'+(WIN?' class=x':'')+'>'+
      (WIN?'<button class=xbtn onclick=closeChat() title="Close chat (Ctrl+W)" aria-label="Close chat">'+
        '<svg width=12 height=12 viewBox="0 0 12 12" aria-hidden=true><path d="M2 2l8 8M10 2l-8 8" '+
        'stroke=currentColor stroke-width=1.6 stroke-linecap=round /></svg></button>':'')+
-     '<input id=ttl value="'+esc(r.title)+'" onchange=doRename()>'+
-     '<div class=meta>'+esc((r.model||"").replace("claude-",""))+' · '+(r.completedTurns||0)+
-       ' turns · '+day(r.createdAt)+' → '+day(r.lastActivityAt)+' · '+d.files.length+
-       ' transcripts · '+fmt(d.bytes)+(d.subs?' · '+d.subs+' subagent':'')+'</div>'+
+     '<input id=ttl value="'+esc(r.title)+'" onchange=doRename()'+(WIN?' title="'+meta+'"':'')+'>'+
+     (WIN?'':'<div class=meta>'+meta+'</div>')+                  // Windows: the details live in the title's tooltip
      '<div class=tools>'+
-       (others.length?'<select id=tgt>'+others.map(x=>'<option value="'+key(x)+'">'+esc(label(x))+'</option>').join("")+
+       (WIN?sendGroup(others):
+        others.length?'<select id=tgt>'+others.map(x=>'<option value="'+key(x)+'">'+esc(label(x))+'</option>').join("")+
         '</select><button class="btn p" onclick=btnSend(false)>Copy →</button>'+
         '<button class=btn onclick=btnSend(true)>Move →</button>':'')+
        '<span style="flex:1"></span>'+
@@ -640,7 +693,7 @@ async function doExport(){
 }
 const doRename=()=>op("rename_chat",{path:chatPath,title:$("#ttl").value},"Renamed","Renaming…");
 const doDelete=()=>op("delete_chat",{path:chatPath},"Deleted");
-function btnSend(mv){const t=S.scopes.find(x=>key(x)===$("#tgt").value);
+function btnSend(mv){const t=S.scopes.find(x=>key(x)===(WIN?tgtKey:$("#tgt").value));
   WIN?ask(chatPath,t,mv):send(chatPath,t,mv);}
 function send(path,t,mv){if(WIN)return transfer(path,t,mv);
   op("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv},
