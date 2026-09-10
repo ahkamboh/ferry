@@ -5,12 +5,14 @@
   --ink:#1f1e1d; --dim:#6b6a67; --faint:#9a978f; --line:#e5e2db;
   --accent:#d97757; --ok:#3d7a52; --warn:#a5713a; --user:#f0eee6;
   --code:#f5f3ee; --sh:0 1px 2px rgba(0,0,0,.03),0 6px 18px rgba(0,0,0,.05);
+  --veil:rgba(250,249,247,.8); --sea:#6f9fc2;
 }
 @media(prefers-color-scheme:dark){:root{
   --bg:#1f1e1d; --side:#191817; --panel:#262624; --raise:#2b2a28;
   --ink:#f5f4ef; --dim:#a8a49c; --faint:#78746c; --line:#38352f;
   --accent:#d97757; --ok:#6fbf8b; --warn:#d4a05c; --user:#2f2e2b;
   --code:#1a1917; --sh:0 1px 2px rgba(0,0,0,.3),0 6px 18px rgba(0,0,0,.28);
+  --veil:rgba(31,30,29,.8); --sea:#5d8cb0;
 }
 .tools select{background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='9' height='6'><path d='M0 0h9L4.5 6z' fill='%23a8a49c'/></svg>")}}
 *{box-sizing:border-box;margin:0}
@@ -58,6 +60,7 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
  font-size:10.5px;font-weight:700;color:#fff;letter-spacing:.02em}
 .acct .who{font-size:12.5px;font-weight:560;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .acct .mt{font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums;margin-top:1px}
+.acct .em{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
 .acct .bd{min-width:0;flex:1}
 .dotc{width:6px;height:6px;border-radius:99px;background:var(--ok);display:inline-block;margin-right:4px}
 .secl{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);
@@ -142,6 +145,97 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
  font-weight:500;opacity:0;transition:.18s;pointer-events:none;z-index:50;max-width:60vw}
 #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 #toast.err{background:#c0392b;color:#fff}
+
+/* loading: skeleton rows while the first scan runs, the ferry mascot while anything is busy */
+.sk{display:block;border-radius:6px;background:linear-gradient(90deg,var(--line) 30%,var(--raise) 50%,var(--line) 70%);
+ background-size:300% 100%;animation:sk 1.3s ease-in-out infinite}
+@keyframes sk{from{background-position:100% 0}to{background-position:0 0}}
+.skacct{display:flex;gap:9px;padding:9px;margin-bottom:3px}
+.skacct .ln{flex:1;display:grid;gap:6px;padding-top:2px}
+.skrow{padding:10px}
+.loading{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;
+ gap:14px;color:var(--dim);font-size:13px;font-weight:500;padding-bottom:40px}
+.mascot{width:116px;height:auto;display:block}
+.mascot .ink{fill:var(--ink)}.mascot .clay{fill:var(--accent)}.mascot .bg{fill:var(--bg)}
+.mascot .cream{fill:#f4f2ec}.mascot .sea{fill:var(--sea)}
+#busy{position:fixed;inset:0;display:none;place-items:center;background:var(--veil);z-index:45}
+#busy.on{display:grid}
+#busy .card{display:flex;flex-direction:column;align-items:center;gap:14px;padding-bottom:30px}
+#busy .msg{font-size:13.5px;font-weight:560;max-width:340px;text-align:center;
+ overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(prefers-reduced-motion:reduce){.sk{animation:none!important}}
+#ctx{position:fixed;display:none;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+ box-shadow:var(--sh);padding:4px;z-index:60;min-width:150px}
+#ctx.on{display:block}
+#ctx button{display:flex;width:100%;align-items:center;justify-content:space-between;gap:18px;
+ padding:6px 10px;border-radius:7px;font-size:12.5px}
+#ctx button:hover{background:var(--raise)}
+#ctx kbd{font:10.5px ui-monospace,"SF Mono",Menlo,monospace;color:var(--faint)}
+/* Windows: close button on an open chat, and the confirm card before a copy or move */
+#rhead.x{padding-right:64px}
+.xbtn{position:absolute;top:20px;right:22px;width:30px;height:30px;border:1px solid var(--line);border-radius:8px;
+ background:var(--panel);display:grid;place-items:center;color:var(--dim);transition:.13s}
+.xbtn:hover{color:var(--ink);border-color:var(--faint)}
+.trow{display:flex;align-items:center;gap:12px}                  /* title | Markdown · Download · Delete */
+.trow #ttl{flex:1;min-width:0;width:auto;margin:0 0 0 -7px}
+.trow .fops{margin-top:0;flex:none;flex-wrap:nowrap}
+#ask{position:fixed;inset:0;display:none;place-items:center;background:var(--veil);z-index:46}
+#ask.on{display:grid}
+.askc{width:min(470px,calc(100vw - 40px));background:var(--panel);border:1px solid var(--line);border-radius:14px;
+ box-shadow:var(--sh);padding:20px 22px 16px}
+.askc h3{font-size:15px;font-weight:640;letter-spacing:-.01em}
+.askc .ct{margin-top:4px;color:var(--faint);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.route{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:12px;
+ margin:12px 0 14px;font-size:13px;font-weight:560}
+.route .who{display:flex;align-items:center;gap:8px;min-width:0}
+.route #tto{justify-self:end;max-width:100%}
+/* the ring marks where the chat is: on the source's badge while it waits,
+   on the destination's once it lands (.hl moves from #tfrom to #tto) */
+.route .who .av{transition:box-shadow .3s}
+.route .who.hl .av{box-shadow:0 0 0 2px var(--panel),0 0 0 4.5px var(--accent)}
+.route .who.hl>span:last-child{font-weight:700;color:var(--ink)}
+.route .who>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.route .mascot{width:120px;flex:none;margin:-4px 0}
+.askc p{color:var(--dim);font-size:12.5px;line-height:1.55}
+.askc p+p{margin-top:6px}
+.askc p b{color:var(--ink);font-weight:600}
+.askc .warn{color:var(--warn)}
+.askb{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+/* Windows: "Send to [account ⌄] | Copy·Move" in the chat header - a field that
+   reads as a dropdown, a divider, then a two-way switch */
+.sendg{display:inline-flex;align-items:center;gap:10px}
+.sendg .cap{font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);
+ white-space:nowrap}
+.pick{height:32px;min-width:160px;max-width:230px;display:inline-flex;align-items:center;gap:8px;padding:0 9px 0 5px;
+ border:1px solid var(--line);border-radius:9px;background:var(--bg);font-size:12.5px;font-weight:600;transition:.13s}
+.pick:hover,.pick[aria-expanded=true]{border-color:var(--faint);background:var(--panel)}
+.pick>span:not(.av){flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pick svg{flex:none;color:var(--dim);transition:transform .15s}
+.pick[aria-expanded=true] svg{transform:rotate(180deg)}
+.pick .av,#pmenu .av{width:20px;height:20px;font-size:9.5px;border-radius:6px}
+.sendg .sep{width:1px;height:22px;background:var(--line)}
+.seg{position:relative;display:inline-grid;grid-template-columns:1fr 1fr;padding:3px;border:1px solid var(--line);
+ border-radius:10px;background:var(--side)}
+.seg .thumb{position:absolute;top:3px;bottom:3px;left:3px;width:calc(50% - 3px);border-radius:7px;
+ background:var(--accent);transition:transform .2s ease}
+.seg[data-v=move] .thumb{transform:translateX(100%)}
+.seg button{position:relative;height:26px;padding:0 18px;border-radius:7px;font-size:12px;font-weight:600;
+ color:var(--dim);transition:color .2s}
+.seg button.on{color:#fff}
+.seg button:not(.on):hover{color:var(--ink)}
+.nosend{font-size:12px;color:var(--faint)}
+#pmenu{position:fixed;display:none;min-width:210px;background:var(--panel);border:1px solid var(--line);
+ border-radius:10px;box-shadow:var(--sh);padding:4px;z-index:40}
+#pmenu.on{display:block}
+#pmenu .mi{display:flex;width:100%;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;font-size:12.5px;
+ font-weight:560;text-align:left}
+#pmenu .mi:hover{background:var(--raise)}
+#pmenu em{margin-left:auto;font-style:normal;font-size:10.5px;color:var(--faint);font-weight:500}
+#pmenu b{margin-left:auto;color:var(--accent)}
+#pmenu em+b{margin-left:8px}
+.route .who{transition:opacity .3s}
+.route .who.out{opacity:.45}                                   /* where a moved chat left */
+.askc .stat{margin-top:16px;text-align:center;font-size:13px;font-weight:560;color:var(--ink)}
 </style></head><body>
 
 <div id=bar>
@@ -149,7 +243,7 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
   <span style="flex:1"></span>
   <span style="flex:1"></span><span id=lock></span>
   <button class=btn onclick=vault() title="Copy every chat and transcript into ~/.ferry. Protects against Claude deleting a chat and against the 30-day transcript cleanup.">Back up</button>
-  <button class=btn onclick=load() title="Re-read the accounts and chats from disk">Refresh</button>
+  <button class=btn onclick=refresh() title="Re-read the accounts and chats from disk">Refresh</button>
 </div>
 <main>
   <div class=col id=side></div>
@@ -157,6 +251,10 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
   <div class=col id=read></div>
 </main>
 <div id=drop></div><div id=toast></div>
+<div id=ctx role=menu><button role=menuitem onclick=refresh()>Refresh <kbd>F5</kbd></button></div>
+<div id=pmenu role=menu></div>
+<div id=ask></div>
+<div id=busy role=status aria-live=polite><div class=card><div id=bm></div><div class=msg id=bmsg></div></div></div>
 
 <script>
 const iv=(c,a={})=>window.__TAURI__.core.invoke(c,a);
@@ -172,6 +270,226 @@ let S=null,scopeKey=null,chatPath=null,q="",dragged=null;
 
 function toast(m,err){const t=$("#toast");t.textContent=m;t.className="on"+(err?" err":"");
  clearTimeout(t._x);t._x=setTimeout(()=>t.className="",err?5200:2400);}
+
+/* ---------- mascot ----------
+   The Ferry logo come alive: one head per account, joined by the bar, and a
+   chat block that rides across while Ferry works. Pixel art in the style of
+   mascot-maker (github.com/ahkamboh/mascot-maker) - a pose per frame, a timed
+   loop, one payoff pose. Each colour is a single SVG <path> of 1x1 pixels, so
+   no hairline seams show, and the colours are theme tokens (.ink, .clay …). */
+const MA=[7.5,7.5],MB=[14.5,14.5],MR=4.3;         // head centres and radius, 22 px grid
+function barT(x,y){                               // how far along the bar (0-1), or -1 if off it
+  const vx=MB[0]-MA[0],vy=MB[1]-MA[1];
+  const t=Math.max(0,Math.min(1,((x-MA[0])*vx+(y-MA[1])*vy)/(vx*vx+vy*vy)));
+  return Math.hypot(x-MA[0]-t*vx,y-MA[1]-t*vy)<=1.15?t:-1;}
+function eyes(put,cx,cy,look,pose,c){             // open, blink, or happy ^ ^
+  if(pose==="happy"){for(const [x,y] of [[-3,0],[-2,-1],[-1,0],[1,0],[2,-1],[3,0]])put(cx+x,cy+y,c);return;}
+  for(const x of [-2,2])for(const y of pose==="blink"?[0]:[-1,0])put(cx+x+look,cy+y+look,c);}
+function drawMascot(f){
+  const px=new Map(),put=(x,y,c)=>px.set(x+","+y,c),hop=f.happy?-1:0;
+  const inHead=(x,y,h)=>Math.hypot(x+.5-h[0],y+.5-h[1])<=MR;
+  for(let y=0;y<22;y++)for(let x=0;x<22;x++){const t=barT(x+.5,y+.5);
+    if(inHead(x,y,MA))put(x,y,"ink");                           // this account
+    else if(t>=0&&!inHead(x,y,MB))put(x,y,t<.5?"ink":"clay");}   // the bar, split like the logo
+  for(let y=0;y<22;y++)for(let x=0;x<22;x++)if(inHead(x,y,MB))put(x,y+hop,"clay");   // the other account
+  const pose=f.happy?"happy":f.blink?"blink":"open";
+  eyes(put,7,7,f.look?1:0,pose,"bg");eyes(put,14,14+hop,f.look?-1:0,pose,"cream");
+  if(f.cargo!=null){const p=Math.round(7+7*f.cargo);                // the chat, riding the bar
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)put(p+dx,p+dy,"sea");put(p-2,p+1,"sea");}
+  const by={};px.forEach((c,k)=>{const [x,y]=k.split(",");(by[c]=by[c]||[]).push("M"+x+" "+y+"h1v1h-1z");});
+  return Object.entries(by).map(([c,d])=>'<path class='+c+' d="'+d.join("")+'"/>').join("");}
+const SEQ=[];                                     // 110 ms a frame: idle + blink, look, carry
+for(let i=0;i<10;i++)SEQ.push({blink:i===6});
+for(let i=0;i<4;i++)SEQ.push({look:1});
+for(let i=0;i<=10;i++)SEQ.push({look:1,cargo:i/10});
+for(let i=0;i<3;i++)SEQ.push({});
+const HAPPY={happy:1};                            // the payoff: saved on the other side
+const mascot=()=>'<svg class=mascot viewBox="-1 -3 24 27" shape-rendering=crispEdges aria-hidden=true>'
+  +drawMascot(SEQ[0])+'</svg>';
+let seqI=0,seqT=null;
+const still=matchMedia("(prefers-reduced-motion: reduce)").matches;
+const IDLE=".mascot:not(.own)";                   // .own mascots are driven by transfer()
+function paint(f){document.querySelectorAll(IDLE).forEach(e=>e.innerHTML=drawMascot(f));}
+function tick(){                                  // runs only while an idle mascot is on screen
+  if(!document.querySelector(IDLE)){seqT=null;return;}
+  paint(SEQ[seqI++%SEQ.length]);seqT=setTimeout(tick,110);}
+const wake=()=>{if(!seqT&&!still)seqT=setTimeout(tick,0);};
+
+/* ---------- loading ---------- */
+function drawSkeleton(){
+  const bar=(w,h)=>'<span class=sk style="width:'+w+';height:'+h+'px"></span>';
+  $("#side").innerHTML='<div class=secl>accounts</div>'+[70,56,62].map(w=>
+    '<div class=skacct><span class=sk style="width:26px;height:26px;border-radius:8px;flex:none"></span>'+
+    '<div class=ln>'+bar(w+'%',10)+bar('36%',8)+'</div></div>').join("");
+  $("#list").innerHTML='<span class=sk style="height:33px;border-radius:9px;margin-bottom:12px"></span>'+
+    [82,64,90,55,76,68,48,86].map(w=>'<div class=skrow>'+bar(w+'%',10)+'</div>').join("");
+  $("#read").innerHTML='<div class=loading>'+mascot()+'<div>Reading your chats…</div></div>';
+  wake();
+}
+// One operation at a time: a second click while busy is ignored. The mascot
+// appears only if the work outlasts a blink (or at once, with o.now) and stays
+// up long enough to read.
+let busyOn=false;
+async function busy(msg,fn,o={}){
+  if(busyOn)return;busyOn=true;
+  const b=$("#busy");let shown=0;
+  const t=setTimeout(()=>{$("#bm").innerHTML=mascot();$("#bmsg").textContent=msg;
+    b.className="on";shown=Date.now();wake();},o.now?0:150);
+  try{return await fn();}
+  finally{clearTimeout(t);
+    if(shown){const left=(o.min||400)-(Date.now()-shown);
+      if(left>0)await new Promise(z=>setTimeout(z,left));}
+    b.className="";busyOn=false;}
+}
+
+/* ---------- transfer (Windows) ----------
+   Copy or move inside the confirm card: once confirmed the card stays up, its
+   mascot carries the chat between the two accounts, and it closes after the
+   cheer. The chat always makes at least one full trip, even when the write
+   lands at once; a slow write keeps it making trips, and the cheer follows
+   the trip that finds the write done. A failed write stops the animation at
+   once, so a refusal never looks like a success. */
+const LOOK=[{look:1},{look:1},{look:1}],TRIP=[],CHEER=Array(7).fill(HAPPY);
+for(let i=0;i<=11;i++)TRIP.push({look:1,cargo:i/11});
+async function transfer(path,t,mv){
+  if(busyOn)return;busyOn=true;
+  const a=$("#ask"),ok=(mv?"Moved to ":"Copied to ")+short(t);
+  let err=null,landed=false;
+  try{
+    if(!a.className)ask(path,t,mv);                              // it always runs in the card
+    if(!a.className)return;
+    a.onclick=null;                                              // no cancelling mid-trip
+    $("#askh").textContent=mv?"Moving this chat…":"Copying this chat…";
+    a.querySelectorAll(".askc p").forEach(x=>x.remove());
+    a.querySelector(".askb").outerHTML='<p class=stat id=astat>'+esc((mv?"Moving to ":"Copying to ")+short(t))+'…</p>';
+    const m=a.querySelector(".route .mascot");m.classList.add("own");   // the idle loop lets go of it
+    const play=fs=>new Promise(z=>{let i=0;(function f(){
+      if(i>=fs.length||err)return z();m.innerHTML=drawMascot(fs[i++]);setTimeout(f,110);})();});
+    const work=iv("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv})
+      .then(()=>{},e=>{err=String(e);}).finally(()=>{landed=true;});
+    if(still)await work;
+    else{await play(LOOK);do{await play(TRIP);}while(!landed&&!err);}
+    await work;
+    if(err)return toast(err,true);
+    $("#askh").textContent=mv?"Chat moved":"Chat copied";          // the title says it; the status line
+    $("#astat").style.visibility="hidden";                           // steps aside, keeping its space
+    $("#tfrom").classList.remove("hl");$("#tto").classList.add("hl");   // the ring follows the chat
+    if(mv)$("#tfrom").classList.add("out");
+    await Promise.all([                            // cheer while the lists redraw behind the card
+      still?(m.innerHTML=drawMascot(HAPPY),new Promise(z=>setTimeout(z,700))):play(CHEER),
+      (async()=>{await load();
+        if(chatPath){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){drawRead(null);}}
+        else drawRead(null);})()]);
+    toast(ok);
+  }finally{closeAsk();busyOn=false;}
+}
+// The loading states, busy card and right-click menu are Windows-only (WIN);
+// on macOS every path below falls through to the original behaviour.
+const refresh=()=>WIN?busy("Reading your chats…",load):load();
+
+/* ---------- right-click (Windows) ----------
+   WebView2's own menu (Back, Reload, Save as, Print…) means nothing in an
+   app, so it is replaced by one item. Text fields keep theirs for cut/paste.
+   F5 and Ctrl+R re-read from disk instead of reloading the page. */
+if(WIN){
+  const hideCtx=()=>$("#ctx").className="";
+  document.addEventListener("contextmenu",e=>{
+    if(e.target.closest("input,textarea"))return;
+    e.preventDefault();const m=$("#ctx");m.className="on";
+    m.style.left=Math.min(e.clientX,innerWidth-m.offsetWidth-8)+"px";
+    m.style.top=Math.min(e.clientY,innerHeight-m.offsetHeight-8)+"px";});
+  const hideMenus=()=>{hideCtx();$("#pmenu").className="";
+    const p=$("#pick");if(p)p.setAttribute("aria-expanded","false");};
+  document.addEventListener("click",hideMenus);
+  addEventListener("blur",hideMenus);
+  document.addEventListener("keydown",e=>{
+    if(e.key==="Escape"){hideMenus();if(!busyOn)closeAsk();}        // a card mid-trip stays up
+    if(e.key==="Enter"&&$("#ask").className&&!busyOn){e.preventDefault();   // confirm: the focused card button, else the primary
+      const f=document.activeElement;(f&&f.tagName==="BUTTON"&&f.closest("#ask")?f:$("#ask .btn.p")).click();}
+    if(e.key==="F5"||(e.ctrlKey&&e.key.toLowerCase()==="r")){e.preventDefault();hideCtx();refresh();}
+    if(e.ctrlKey&&e.key.toLowerCase()==="w"){e.preventDefault();closeChat();}});
+}
+
+/* ---------- close and confirm (Windows) ---------- */
+function closeChat(){if(!chatPath)return;
+  const t=$("#ttl");if(t&&document.activeElement===t)t.blur();   // commit a half-typed title first
+  chatPath=null;drawList();drawRead(null);}
+const closeAsk=()=>{const a=$("#ask");a.className="";a.innerHTML="";};
+function chatAt(p){for(const s of S.scopes)for(const c of s.chats)if(c.path===p)return [s,c];return [];}
+// The card names an account by the part before the @; hovering shows the rest.
+// An account is named by its nickname, else its Claude display name, else the
+// part of its address before the @; hovering shows everything known about it.
+const short=s=>s.label||(s.profile&&s.profile.name)||label(s).split("@")[0];
+const whoTip=s=>[s.label,s.profile&&s.profile.name,s.profile&&s.profile.email]
+  .filter((x,i,a)=>x&&a.indexOf(x)===i).concat("Account "+s.acct.slice(0,8)+(s.isCurrent?" · signed in now":"")).join("\n");
+const avatar=s=>'<span class=av style="background:hsl('+hue(s.acct)+' 42% 48%)">'+
+  esc(((s.profile&&s.profile.name)||label(s)).slice(0,2).toUpperCase())+'</span>';
+function who(s,id){
+  return '<span class=who id='+id+' title="'+esc(whoTip(s))+'">'+avatar(s)+'<span>'+esc(short(s))+'</span></span>';}
+
+/* ---------- send to (Windows) ----------
+   The chat header's copy/move row: "Send to" [account ⌄] | Copy·Move. The
+   account field opens a list with each account's badge and short name, marks
+   the signed-in one, and remembers the choice from chat to chat. Copy/Move is
+   a switch: pressing a side slides to it and opens the confirm card at once;
+   it stays on the last one used. */
+let tgtKey=null,curD=null,sendMv=false;
+const CHEVRON='<svg width=12 height=12 viewBox="0 0 12 12" aria-hidden=true><path d="M3 4.5l3 3 3-3" fill=none '+
+  'stroke=currentColor stroke-width=1.6 stroke-linecap=round stroke-linejoin=round /></svg>';
+function sendGroup(others){
+  if(!others.length)return '<span class=nosend>Sign in to another account in Claude to copy chats to it.</span>';
+  if(!others.some(x=>key(x)===tgtKey))tgtKey=key(others[0]);
+  const t=others.find(x=>key(x)===tgtKey),to=esc(short(t));
+  return '<span class=sendg><span class=cap>Send to</span>'+
+    '<button class=pick id=pick onclick="pickMenu(event)" title="'+esc(whoTip(t))+
+      '" aria-haspopup=listbox aria-expanded=false>'+avatar(t)+'<span>'+to+'</span>'+CHEVRON+'</button>'+
+    '<span class=sep></span>'+
+    '<span class=seg data-v='+(sendMv?'move':'copy')+' role=group aria-label="Copy or move"><span class=thumb></span>'+
+      '<button'+(sendMv?'':' class=on')+' onclick=flip(false) title="Add it to '+to+' and keep it here">Copy</button>'+
+      '<button'+(sendMv?' class=on':'')+' onclick=flip(true) title="Move it to '+to+
+        '. You can restore it here from the deleted list.">Move</button></span></span>';
+}
+function flip(mv){sendMv=mv;const s=$(".seg");s.dataset.v=mv?"move":"copy";
+  s.querySelectorAll("button").forEach((b,i)=>b.classList.toggle("on",i===(mv?1:0)));
+  setTimeout(()=>btnSend(mv),160);}              // let the switch land, then the card
+function pickMenu(e){e.stopPropagation();
+  const m=$("#pmenu"),p=$("#pick");
+  if(m.className){m.className="";p.setAttribute("aria-expanded","false");return;}
+  p.setAttribute("aria-expanded","true");
+  const b=p.getBoundingClientRect();
+  m.innerHTML=S.scopes.filter(x=>key(x)!==scopeKey).map(x=>
+    '<button class=mi role=menuitem data-k="'+esc(key(x))+'" title="'+esc(whoTip(x))+'">'+avatar(x)+
+    '<span>'+esc(short(x))+'</span>'+(x.isCurrent?'<em>signed in</em>':'')+
+    (key(x)===tgtKey?'<b>✓</b>':'')+'</button>').join("");
+  m.style.left=b.left+"px";m.style.top=(b.bottom+4)+"px";m.className="on";
+  m.querySelectorAll(".mi").forEach(x=>x.onclick=()=>{tgtKey=x.dataset.k;m.className="";drawRead(curD);});
+}
+// The last step before a copy or move. From the Copy/Move buttons it confirms
+// that one action; after a drag (mv null) it offers both, since the drop
+// itself chose only the destination. Either way it says what will happen.
+function ask(p,t,mv){
+  const [s,c]=chatAt(p);if(!s||!t)return;
+  const from=esc(short(s)),to=esc(short(t)),a=$("#ask");
+  const btn=(id,txt,pri)=>'<button class="btn'+(pri?' p':'')+'" id='+id+'>'+txt+'</button>';
+  a.innerHTML='<div class=askc role=dialog aria-modal=true aria-labelledby=askh>'+
+    '<h3 id=askh>'+(mv===null?'Send this chat to '+to:mv?'Move this chat?':'Copy this chat?')+'</h3>'+
+    '<div class=ct>'+esc(c.title)+'</div>'+
+    '<div class=route>'+who(s,"tfrom")+mascot()+who(t,"tto")+'</div>'+   // the trip it is about to make
+    (mv===null?'<p><b>Copy</b> keeps it in '+from+' as well. <b>Move</b> takes it out of '+from+
+        ', and you can restore it from the deleted list.</p>'
+     :mv?'<p>It moves to '+to+' and leaves '+from+', where you can restore it from the deleted list.</p>'
+     :'<p>It is added to '+to+' and stays in '+from+'.</p>')+
+    (S.appRunning?'<p class=warn>Claude is open, so Ferry can\'t write yet. Quit Claude, then confirm.</p>':'')+
+    '<div class=askb>'+btn("an","Cancel")+
+      (mv===null?btn("am","Move")+btn("ac","Copy",1):btn("ago",mv?"Move":"Copy",1))+'</div></div>';
+  a.className="on";wake();
+  $("#tfrom").classList.add("hl");                             // the chat starts here
+  $("#an").onclick=closeAsk;
+  a.onclick=e=>{if(e.target===a)closeAsk();};                  // a click outside the card cancels
+  for(const [id,m] of [["am",true],["ac",false],["ago",mv]])   // the card stays: transfer() runs in it
+    if($("#"+id))$("#"+id).onclick=()=>send(p,t,m);
+  a.querySelector(".btn.p").focus();                           // Enter confirms, Esc cancels
+}
 
 /* ---------- markdown ---------- */
 function md(src){
@@ -230,8 +548,9 @@ function md(src){
 const unesc=s=>String(s).replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/&amp;/g,"&");
 
 /* ---------- data ---------- */
-async function load(){
+async function load(hold){
   S=await iv("scan");
+  if(hold)await hold;
     $("#lock").innerHTML=S.appRunning?'<span class=lock title="Ferry will not write while the Claude app is running - quit Claude to enable editing">Claude is open · editing off</span>':'';
   if(!scopeKey||!S.scopes.find(s=>key(s)===scopeKey))scopeKey=S.scopes[0]&&key(S.scopes[0]);
   drawSide();
@@ -282,10 +601,13 @@ function diagPanel(){
 function drawSide(){
   const s0=scope();
   $("#side").innerHTML='<div class=secl>accounts</div>'+S.scopes.map(s=>{
-    const nm=label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
-    return '<div class="acct '+(key(s)===scopeKey?'on':'')+'" data-k="'+key(s)+'" onclick="pick(\''+key(s)+'\')">'+
+    const nm=WIN?short(s):label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
+    const em=WIN&&s.profile&&s.profile.email;                    // Windows: name, then address
+    return '<div class="acct '+(key(s)===scopeKey?'on':'')+'" data-k="'+key(s)+'" onclick="pick(\''+key(s)+'\')"'+
+        (WIN?' title="'+esc(whoTip(s))+'"':'')+'>'+
       '<div class=av style="background:hsl('+hue(s.acct)+' 42% 48%)">'+esc(ini)+'</div>'+
       '<div class=bd><div class=who>'+(s.isCurrent?'<span class=dotc></span>':'')+esc(nm)+'</div>'+
+      (em?'<div class=em>'+esc(em)+'</div>':'')+
       '<div class=mt>'+s.chats.length+' chats'+(s.deleted.length?' · '+s.deleted.length+' deleted':'')+'</div>'+
       '</div></div>';}).join("")
    +(s0?'<div class=secl>rename</div><div style="padding:0 9px"><input id=nick placeholder="name this account" value="'+
@@ -297,6 +619,14 @@ function drawSide(){
     el.ondragover=e=>{if(dragged&&el.dataset.k!==scopeKey){e.preventDefault();el.classList.add("drop");}};
     el.ondragleave=()=>el.classList.remove("drop");
     el.ondrop=e=>{e.preventDefault();el.classList.remove("drop");askDrop(e,el.dataset.k);};});
+  // Windows: accept dragenter as well as dragover - a strict drop target needs
+  // both, or the pointer over an account's name or avatar shows "no drop" -
+  // and only clear the highlight when the pointer really leaves the account.
+  if(WIN)document.querySelectorAll(".acct").forEach(el=>{
+    const ok=()=>dragged&&el.dataset.k!==scopeKey;
+    el.ondragenter=e=>{if(ok()){e.preventDefault();el.classList.add("drop");}};
+    el.ondragover=e=>{if(ok()){e.preventDefault();e.dataTransfer.dropEffect="copy";el.classList.add("drop");}};
+    el.ondragleave=e=>{if(!el.contains(e.relatedTarget))el.classList.remove("drop");};});
 }
 function pick(k){scopeKey=k;chatPath=null;drawSide();drawList();drawRead(null);}
 function drawEmpty(){ $("#read").innerHTML=diagPanel(); $("#list").innerHTML=""; }
@@ -316,11 +646,16 @@ function drawList(){
     const i=$("#q");i.focus();i.setSelectionRange(i.value.length,i.value.length);};
   document.querySelectorAll(".ch[draggable]").forEach(el=>{
     el.ondragstart=()=>dragged=el.dataset.p; el.ondragend=()=>dragged=null;});
+  // Windows: give the drag a payload and say it can copy or move; a drag that
+  // carries no data can be treated as having nothing to drop
+  if(WIN)document.querySelectorAll(".ch[draggable]").forEach(el=>el.ondragstart=e=>{dragged=el.dataset.p;
+    e.dataTransfer.effectAllowed="copyMove";e.dataTransfer.setData("text/plain",el.querySelector(".t").textContent);});
 }
 
 function askDrop(e,k){
   const p=dragged;if(!p)return;
   const t=S.scopes.find(s=>key(s)===k),d=$("#drop");
+  if(WIN)return ask(p,t,null);                                  // Windows: the choice is made on the card
   d.style.left=Math.min(e.clientX,innerWidth-200)+"px";
   d.style.top=Math.min(e.clientY,innerHeight-56)+"px";
   d.className="on";
@@ -332,30 +667,44 @@ function askDrop(e,k){
 }
 
 async function openChat(p){chatPath=p;drawList();
-  try{drawRead(await iv("chat_detail",{path:p}));}catch(e){toast(String(e),true);}}
+  if(!WIN){try{drawRead(await iv("chat_detail",{path:p}));}catch(e){toast(String(e),true);}return;}
+  // a long transcript takes a moment to read: show the ferry rather than a stale chat
+  const t=setTimeout(()=>{$("#read").innerHTML='<div class=loading>'+mascot()+'<div>Opening chat…</div></div>';wake();},120);
+  try{const d=await iv("chat_detail",{path:p});clearTimeout(t);
+    if(chatPath===p)drawRead(d);}                // a later click wins over a slow earlier one
+  catch(e){clearTimeout(t);toast(String(e),true);}}
 
 function drawRead(d){
   if(!d){$("#read").innerHTML='<div class=empty>Select a conversation.<br>'+
     'Drag one onto an account in the sidebar to copy or move it.</div>';return;}
-  const r=d.rec,others=S.scopes.filter(x=>key(x)!==scopeKey);
-  $("#read").innerHTML=
-   '<div id=rhead>'+
-     '<input id=ttl value="'+esc(r.title)+'" onchange=doRename()>'+
-     '<div class=meta>'+esc((r.model||"").replace("claude-",""))+' · '+(r.completedTurns||0)+
+  const r=d.rec,others=S.scopes.filter(x=>key(x)!==scopeKey);curD=d;
+  const meta=esc((r.model||"").replace("claude-",""))+' · '+(r.completedTurns||0)+
        ' turns · '+day(r.createdAt)+' → '+day(r.lastActivityAt)+' · '+d.files.length+
-       ' transcripts · '+fmt(d.bytes)+(d.subs?' · '+d.subs+' subagent':'')+'</div>'+
-     '<div class=tools>'+
-       (others.length?'<select id=tgt>'+others.map(x=>'<option value="'+key(x)+'">'+esc(label(x))+'</option>').join("")+
-        '</select><button class="btn p" onclick=btnSend(false)>Copy →</button>'+
-        '<button class=btn onclick=btnSend(true)>Move →</button>':'')+
-       '<span style="flex:1"></span>'+
+       ' transcripts · '+fmt(d.bytes)+(d.subs?' · '+d.subs+' subagent':'');
+  const ttl='<input id=ttl value="'+esc(r.title)+'" onchange=doRename()'+(WIN?' title="'+meta+'"':'')+'>';
+  const fileops=
        '<select id=fmt title="File format for the download">'+
          '<option value=md>Markdown</option><option value=txt>Plain text</option>'+
          '<option value=json>JSON</option></select>'+
        '<button class=btn onclick=doExport() title="Choose where to save the whole conversation. Currently defaults to '+
          esc((S.exportDir||"~/Downloads").replace(/^\/Users\/[^\/]+/,"~"))+'">Download</button>'+
-       '<button class="btn d" onclick=doDelete()>Delete</button>'+
-     '</div></div>'+
+       '<button class="btn d" onclick=doDelete()>Delete</button>';
+  $("#read").innerHTML=
+   '<div id=rhead'+(WIN?' class=x':'')+'>'+
+     (WIN?'<button class=xbtn onclick=closeChat() title="Close chat (Ctrl+W)" aria-label="Close chat">'+
+       '<svg width=12 height=12 viewBox="0 0 12 12" aria-hidden=true><path d="M2 2l8 8M10 2l-8 8" '+
+       'stroke=currentColor stroke-width=1.6 stroke-linecap=round /></svg></button>'+
+       // Windows: the file actions share the title's row (the details live in its
+       // tooltip), and the row below is only about sending the chat
+       '<div class=trow>'+ttl+'<span class="tools fops">'+fileops+'</span></div>'+
+       '<div class=tools>'+sendGroup(others)+'</div>'
+     :ttl+'<div class=meta>'+meta+'</div>'+
+       '<div class=tools>'+
+       (others.length?'<select id=tgt>'+others.map(x=>'<option value="'+key(x)+'">'+esc(label(x))+'</option>').join("")+
+        '</select><button class="btn p" onclick=btnSend(false)>Copy →</button>'+
+        '<button class=btn onclick=btnSend(true)>Move →</button>':'')+
+       '<span style="flex:1"></span>'+fileops+'</div>')+
+     '</div>'+
    '<div id=body>'+(d.msgs.length?d.msgs.map(m=>
      '<div class="turn '+m.role+'">'+
        '<div class=who2>'+(m.role==="user"?"You":"Claude")+' · '+m.t.replace("T"," ")+'</div>'+
@@ -367,13 +716,15 @@ function drawRead(d){
    '</div>';
 }
 
-async function op(cmd,args,ok){
+async function op(cmd,args,ok,msg,o){
+  const run=async()=>{
   try{const r=await iv(cmd,args);
     if(r&&r.cancelled){toast("Cancelled");return r;}
     toast(ok);await load();
     if(chatPath&&cmd!=="delete_chat"){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){drawRead(null);}}
     else drawRead(null);return r;}
-  catch(e){toast(String(e),true);}}
+  catch(e){toast(String(e),true);}};
+  return msg&&WIN?busy(msg,run,o):run();}   // no card for delete: its own dialog is already up
 async function doExport(){
   try{ const r=await iv("export_chat",{path:chatPath,fmt:$("#fmt").value,ask:true});
        if(r.cancelled) return toast("Download cancelled");
@@ -381,16 +732,24 @@ async function doExport(){
        toast("Saved "+r.messages+" messages · "+r.kb+" KB → "+where); }
   catch(e){ toast(String(e),true); }
 }
-const doRename=()=>op("rename_chat",{path:chatPath,title:$("#ttl").value},"Renamed");
+const doRename=()=>op("rename_chat",{path:chatPath,title:$("#ttl").value},"Renamed","Renaming…");
 const doDelete=()=>op("delete_chat",{path:chatPath},"Deleted");
-function btnSend(mv){send(chatPath,S.scopes.find(x=>key(x)===$("#tgt").value),mv);}
-function send(path,t,mv){op("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv},
+function btnSend(mv){const t=S.scopes.find(x=>key(x)===(WIN?tgtKey:$("#tgt").value));
+  WIN?ask(chatPath,t,mv):send(chatPath,t,mv);}
+function send(path,t,mv){if(WIN)return transfer(path,t,mv);
+  op("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv},
   (mv?"Moved to ":"Copied to ")+label(t));}
-const undel=id=>{const s=scope();op("undelete_chat",{acct:s.acct,org:s.org,id:id},"Restored");};
+const undel=id=>{const s=scope();op("undelete_chat",{acct:s.acct,org:s.org,id:id},"Restored","Restoring…");};
 const setLabel=(a,v)=>op("set_label",{acct:a,name:v},"Saved");
-async function vault(){toast("Backing up...");
+async function backup(){
   try{const r=await iv("run_vault");
     toast("Backed up "+r.records+" chats · "+r.transcripts+" new files · "+r.mb+" MB");}
   catch(e){toast(String(e),true);}}
-drawRead(null);load();
+function vault(){if(WIN)return busy("Backing up every chat…",backup,{now:true});
+  toast("Backing up...");return backup();}
+if(WIN){
+  drawSkeleton();         // held at least 700 ms so a fast scan reads as loading, not a flicker
+  load(new Promise(z=>setTimeout(z,700))).then(()=>{if(S.scopes.length)drawRead(null);})
+      .catch(e=>{$("#read").innerHTML='<div class=empty style="color:var(--warn)">'+esc(e)+'</div>';});
+}else{drawRead(null);load();}
 </script></body></html>

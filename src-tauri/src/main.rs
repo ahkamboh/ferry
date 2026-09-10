@@ -80,6 +80,8 @@ fn now_ms() -> u128 {
 fn stamp() -> String {
     // yyyymmdd-hhmmss without pulling in chrono
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    // Windows has no `date -r`; spawning one would only flash a console window
+    if cfg!(target_os = "windows") { return secs.to_string(); }
     let out = Command::new("date").args(["-r", &secs.to_string(), "+%Y%m%d-%H%M%S"]).output();
     out.ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
        .filter(|s| !s.is_empty()).unwrap_or_else(|| secs.to_string())
@@ -125,16 +127,18 @@ fn app_running() -> bool {
     Command::new("pgrep").args(["-f", "Claude.app/Contents/MacOS/Claude"])
         .output().map(|o| !o.stdout.is_empty()).unwrap_or(false)
 }
-/// On Windows both the desktop app and the bundled CLI are called claude.exe,
-/// so match on the install path instead of the image name.
+/// The desktop app is Chromium: while it runs it holds <user data>\lockfile open
+/// with no sharing, and Windows deletes the file when the process exits, crash
+/// included. So "can't open it" means running. This replaces a PowerShell
+/// process query that took ~2 s, flashed a console window, and only matched
+/// the Store install.
 #[cfg(target_os = "windows")]
 fn app_running() -> bool {
-    Command::new("powershell")
-        .args(["-NoProfile", "-Command",
-               "(Get-Process -Name Claude -ErrorAction SilentlyContinue |                 Where-Object { $_.Path -like '*WindowsApps*' }).Count"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().unwrap_or(0) > 0)
-        .unwrap_or(false)
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    match fs::File::open(format!("{}\\lockfile", claude_dir())) {
+        Err(e) => e.raw_os_error() == Some(ERROR_SHARING_VIOLATION),
+        Ok(_) => false,
+    }
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn app_running() -> bool { false }
@@ -182,7 +186,51 @@ fn profiles() -> Value {
             out[uuid] = json!({ "email": email, "name": name });
         }
     }
+    #[cfg(target_os = "windows")]
+    known_profiles(&mut out);
     out
+}
+
+/// IndexedDB only knows the signed-in account, and Claude keeps it locked while
+/// it runs. Claude Code's own config names its account too - "oauthAccount" in
+/// ~/.claude.json and its backups - and account switchers such as claude-swap
+/// keep one copy of that file per account. Every account seen in any of them is
+/// remembered in ~/.ferry/profiles.json, so it keeps its name after sign-out.
+#[cfg(target_os = "windows")]
+fn known_profiles(found: &mut Value) {
+    let h = home();
+    let cache = format!("{}/profiles.json", vault());
+    let mut known = read_json(&cache).filter(|v| v.is_object()).unwrap_or_else(|| json!({}));
+    let before = known.clone();
+    let mut files: Vec<PathBuf> = vec![PathBuf::from(format!("{}/.claude.json", h)),
+                                       PathBuf::from(format!("{}/.claude.json.backup", h))];
+    for pat in [format!("{}/.claude/backups/.claude.json.backup*", h),
+                format!("{}/.claude-swap-backup/configs/*.json", h)] {
+        if let Ok(g) = glob::glob(&pat) { files.extend(g.flatten()); }
+    }
+    for f in files {
+        let Some(v) = read_json(&f.to_string_lossy()) else { continue };
+        let oa = &v["oauthAccount"];
+        if let (Some(u), Some(e)) = (oa["accountUuid"].as_str(), oa["emailAddress"].as_str()) {
+            let name = oa["displayName"].as_str().or(oa["fullName"].as_str()).unwrap_or("");
+            known[u] = json!({ "email": e, "name": name });
+        }
+    }
+    // what IndexedDB found is current; keep an earlier name if it has none
+    if let Some(o) = found.as_object() {
+        for (k, v) in o {
+            let mut n = v.clone();
+            if n["name"].as_str().unwrap_or("").is_empty() {
+                if let Some(prev) = known[k.as_str()]["name"].as_str().map(String::from) { n["name"] = json!(prev); }
+            }
+            known[k.as_str()] = n;
+        }
+    }
+    if known != before {
+        let _ = fs::create_dir_all(vault());
+        let _ = fs::write(&cache, serde_json::to_string_pretty(&known).unwrap());
+    }
+    *found = known;
 }
 
 /// Every transcript that makes up one chat: current + prior sessions + their subagents.
@@ -286,7 +334,12 @@ fn diagnostics() -> Value {
     })
 }
 
-#[tauri::command]
+// Tauri runs a plain `fn` command on the main thread, so on Windows a slow
+// disk scan froze the whole window. There the commands below use
+// `command(async)`, which runs the same fn on a worker; macOS keeps the plain
+// attribute and behaves exactly as before.
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn scan() -> Value {
     let cur = read_json(&cfg()).and_then(|c| c["lastKnownAccountUuid"].as_str().map(String::from));
     let labs = labels();
@@ -427,7 +480,8 @@ fn collect_msgs(tr: &[Value], cap: usize, per_msg: usize) -> Vec<Value> {
     msgs
 }
 
-#[tauri::command]
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn chat_detail(path: String) -> Result<Value, String> {
     if !under(&sess(), &path) {
         return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
@@ -536,7 +590,8 @@ async fn export_chat(app: tauri::AppHandle, path: String, fmt: String, ask: bool
                "messages": msgs.len(), "kb": (size as f64/1024.0).round() as u64 }))
 }
 
-#[tauri::command]
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<Value, String> {
     guard()?;
     if !under(&sess(), &path) {
@@ -566,7 +621,8 @@ fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<Value,
     Ok(json!({ "ok": true, "wrote": dst, "moved": mv }))
 }
 
-#[tauri::command]
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn rename_chat(path: String, title: String) -> Result<Value, String> {
     guard()?;
     if !under(&sess(), &path) {
@@ -613,7 +669,8 @@ async fn delete_chat(app: tauri::AppHandle, path: String) -> Result<Value, Strin
     Ok(json!({ "ok": true }))
 }
 
-#[tauri::command]
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn undelete_chat(acct: String, org: String, id: String) -> Result<Value, String> {
     guard()?;
     let short = id.trim_start_matches("local_").to_string();
@@ -639,7 +696,8 @@ fn undelete_chat(acct: String, org: String, id: String) -> Result<Value, String>
     Ok(json!({ "ok": true, "from": src.to_string_lossy() }))
 }
 
-#[tauri::command]
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn set_label(acct: String, name: String) -> Result<Value, String> {
     let _ = fs::create_dir_all(vault());
     let mut l = labels();
@@ -648,7 +706,8 @@ fn set_label(acct: String, name: String) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
-#[tauri::command]
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn run_vault() -> Result<Value, String> {
     let base = format!("{}/chats/{}", vault(), stamp());
     fs::create_dir_all(&base).map_err(|e| e.to_string())?;

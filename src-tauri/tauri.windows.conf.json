@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Ferry",
+        "width": 1320,
+        "height": 860,
+        "minWidth": 1040,
+        "minHeight": 620,
+        "titleBarStyle": "Transparent",
+        "hiddenTitle": true,
+        "dragDropEnabled": false
+      }
+    ]
+  }
+}
