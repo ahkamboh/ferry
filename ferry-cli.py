@@ -91,14 +91,13 @@ def ts(ms):
     except Exception: return "?"
 
 def app_running():
+    if sys.platform == "win32":
+        # Chromium holds <user data>\lockfile open, unshared, while the app runs
+        # and Windows deletes it on exit; a PowerShell process query took ~2 s
+        try: open(f"{CLAUDE}/lockfile", "rb").close(); return False
+        except PermissionError: return True
+        except OSError: return False
     try:
-        if sys.platform == "win32":
-            # both the app and the CLI are claude.exe, so match the install path
-            out = subprocess.run(["powershell","-NoProfile","-Command",
-                "(Get-Process -Name Claude -ErrorAction SilentlyContinue | "
-                "Where-Object { $_.Path -like '*WindowsApps*' }).Count"],
-                capture_output=True, text=True).stdout.strip()
-            return out.isdigit() and int(out) > 0
         out = subprocess.run(["pgrep","-f","Claude.app/Contents/MacOS/Claude"],
                              capture_output=True, text=True).stdout.strip()
         return bool(out)

@@ -80,6 +80,8 @@ fn now_ms() -> u128 {
 fn stamp() -> String {
     // yyyymmdd-hhmmss without pulling in chrono
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    // Windows has no `date -r`; spawning one would only flash a console window
+    if cfg!(target_os = "windows") { return secs.to_string(); }
     let out = Command::new("date").args(["-r", &secs.to_string(), "+%Y%m%d-%H%M%S"]).output();
     out.ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
        .filter(|s| !s.is_empty()).unwrap_or_else(|| secs.to_string())
@@ -125,16 +127,18 @@ fn app_running() -> bool {
     Command::new("pgrep").args(["-f", "Claude.app/Contents/MacOS/Claude"])
         .output().map(|o| !o.stdout.is_empty()).unwrap_or(false)
 }
-/// On Windows both the desktop app and the bundled CLI are called claude.exe,
-/// so match on the install path instead of the image name.
+/// The desktop app is Chromium: while it runs it holds <user data>\lockfile open
+/// with no sharing, and Windows deletes the file when the process exits, crash
+/// included. So "can't open it" means running. This replaces a PowerShell
+/// process query that took ~2 s, flashed a console window, and only matched
+/// the Store install.
 #[cfg(target_os = "windows")]
 fn app_running() -> bool {
-    Command::new("powershell")
-        .args(["-NoProfile", "-Command",
-               "(Get-Process -Name Claude -ErrorAction SilentlyContinue |                 Where-Object { $_.Path -like '*WindowsApps*' }).Count"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().unwrap_or(0) > 0)
-        .unwrap_or(false)
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    match fs::File::open(format!("{}\\lockfile", claude_dir())) {
+        Err(e) => e.raw_os_error() == Some(ERROR_SHARING_VIOLATION),
+        Ok(_) => false,
+    }
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn app_running() -> bool { false }
@@ -286,8 +290,11 @@ fn diagnostics() -> Value {
     })
 }
 
+// Every command below is async. Tauri runs a plain `fn` command on the main
+// thread, so a slow disk scan froze the whole window; async ones run on a
+// worker and the UI keeps drawing (the loading mascot included).
 #[tauri::command]
-fn scan() -> Value {
+async fn scan() -> Value {
     let cur = read_json(&cfg()).and_then(|c| c["lastKnownAccountUuid"].as_str().map(String::from));
     let labs = labels();
     let profs = profiles();
@@ -428,7 +435,7 @@ fn collect_msgs(tr: &[Value], cap: usize, per_msg: usize) -> Vec<Value> {
 }
 
 #[tauri::command]
-fn chat_detail(path: String) -> Result<Value, String> {
+async fn chat_detail(path: String) -> Result<Value, String> {
     if !under(&sess(), &path) {
         return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
     }
@@ -537,7 +544,7 @@ async fn export_chat(app: tauri::AppHandle, path: String, fmt: String, ask: bool
 }
 
 #[tauri::command]
-fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<Value, String> {
+async fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<Value, String> {
     guard()?;
     if !under(&sess(), &path) {
         return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
@@ -567,7 +574,7 @@ fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<Value,
 }
 
 #[tauri::command]
-fn rename_chat(path: String, title: String) -> Result<Value, String> {
+async fn rename_chat(path: String, title: String) -> Result<Value, String> {
     guard()?;
     if !under(&sess(), &path) {
         return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
@@ -614,7 +621,7 @@ async fn delete_chat(app: tauri::AppHandle, path: String) -> Result<Value, Strin
 }
 
 #[tauri::command]
-fn undelete_chat(acct: String, org: String, id: String) -> Result<Value, String> {
+async fn undelete_chat(acct: String, org: String, id: String) -> Result<Value, String> {
     guard()?;
     let short = id.trim_start_matches("local_").to_string();
     let mut src: Option<PathBuf> = None;
@@ -640,7 +647,7 @@ fn undelete_chat(acct: String, org: String, id: String) -> Result<Value, String>
 }
 
 #[tauri::command]
-fn set_label(acct: String, name: String) -> Result<Value, String> {
+async fn set_label(acct: String, name: String) -> Result<Value, String> {
     let _ = fs::create_dir_all(vault());
     let mut l = labels();
     l[acct] = json!(name.trim());
@@ -649,7 +656,7 @@ fn set_label(acct: String, name: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn run_vault() -> Result<Value, String> {
+async fn run_vault() -> Result<Value, String> {
     let base = format!("{}/chats/{}", vault(), stamp());
     fs::create_dir_all(&base).map_err(|e| e.to_string())?;
     let (mut recs, mut files, mut bytes) = (0u64, 0u64, 0u64);
