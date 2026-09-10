@@ -758,12 +758,20 @@ fn run_vault() -> Result<Value, String> {
                "mb": (bytes as f64 / 1048576.0 * 10.0).round() / 10.0, "dir": base }))
 }
 
+/// Page zoom for Ctrl/Cmd + and -, Ctrl/Cmd 0 and the zoom control. The UI
+/// picks and remembers the level; this applies it to the webview itself, the
+/// same zoom a browser does, so layout, hit-testing and drag and drop stay right.
+#[tauri::command]
+fn set_zoom(webview_window: tauri::WebviewWindow, scale: f64) -> Result<(), String> {
+    webview_window.set_zoom(scale.clamp(0.5, 2.0)).map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             scan, chat_detail, export_chat, copy_chat, rename_chat, delete_chat,
-            undelete_chat, set_label, run_vault
+            undelete_chat, set_label, run_vault, set_zoom
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch Ferry");

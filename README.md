@@ -51,6 +51,7 @@ Ferry fixes both. It reads the files Claude Code already writes, lets you carry 
 | **Download** | save a whole conversation as Markdown, plain text or JSON, anywhere you choose |
 | **Delete and undelete** | deletes are reversible; restore from another account or from the archive |
 | **Back up** | one button archives every chat and every transcript, subagent transcripts included |
+| **Zoom** | Ctrl/Cmd + and − (or Ctrl/Cmd + scroll), Ctrl/Cmd 0 to reset, or the − 100% + control in the top bar; the level is remembered |
 
 ## Why moving a chat is instant
 
