@@ -173,7 +173,9 @@ fn labels() -> Value { read_json(&labels_path()).unwrap_or_else(|| json!({})) }
 fn profiles() -> Value {
     let mut out = json!({});
     let re = regex::bytes::Regex::new(
-        r"(?s)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}).{0,24}?email_address.{0,4}?([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})(?:.{0,12}?full_name.{0,4}?([A-Za-z0-9 ._\-]{2,40}))?"
+        // Claude's own UI shows display_name ("ahkamboh"), not full_name
+        // ("Ali Hamza Kamboh"), so capture both and prefer the former.
+        r"(?s)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}).{0,24}?email_address.{0,4}?([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})(?:.{0,16}?full_name.{0,4}?([A-Za-z0-9 ._\-]{2,40}))?(?:.{0,16}?display_name.{0,4}?([A-Za-z0-9 ._\-]{2,40}))?"
     ).unwrap();
     for e in walkdir::WalkDir::new(idb()).into_iter().filter_map(|e| e.ok()) {
         if !e.file_type().is_file() { continue; }
@@ -181,12 +183,13 @@ fn profiles() -> Value {
         for c in re.captures_iter(&b) {
             let uuid = String::from_utf8_lossy(&c[1]).to_string();
             let email = String::from_utf8_lossy(&c[2]).to_string();
-            let name = c.get(3).map(|m| String::from_utf8_lossy(m.as_bytes()).trim().to_string())
-                        .unwrap_or_default();
+            let pick = |i: usize| c.get(i)
+                .map(|m| String::from_utf8_lossy(m.as_bytes()).trim().to_string())
+                .filter(|x| !x.is_empty());
+            let name = pick(4).or_else(|| pick(3)).unwrap_or_default();   // display_name, else full_name
             out[uuid] = json!({ "email": email, "name": name });
         }
     }
-    #[cfg(target_os = "windows")]
     known_profiles(&mut out);
     out
 }
@@ -196,7 +199,8 @@ fn profiles() -> Value {
 /// ~/.claude.json and its backups - and account switchers such as claude-swap
 /// keep one copy of that file per account. Every account seen in any of them is
 /// remembered in ~/.ferry/profiles.json, so it keeps its name after sign-out.
-#[cfg(target_os = "windows")]
+/// Not Windows-specific: ~/.claude.json and claude-swap live in the same place
+/// on macOS, and IndexedDB there only ever names the account you are signed in to.
 fn known_profiles(found: &mut Value) {
     let h = home();
     let cache = format!("{}/profiles.json", vault());
@@ -205,25 +209,37 @@ fn known_profiles(found: &mut Value) {
     let mut files: Vec<PathBuf> = vec![PathBuf::from(format!("{}/.claude.json", h)),
                                        PathBuf::from(format!("{}/.claude.json.backup", h))];
     for pat in [format!("{}/.claude/backups/.claude.json.backup*", h),
-                format!("{}/.claude-swap-backup/configs/*.json", h)] {
+                format!("{}/.claude-swap-backup/configs/*.json", h),
+                // claude-swap names them .claude-config-<n>-<email>.json - a leading dot
+                format!("{}/.claude-swap-backup/configs/.*.json", h)] {
         if let Ok(g) = glob::glob(&pat) { files.extend(g.flatten()); }
     }
+    let mut from_json: std::collections::BTreeMap<String, String> = Default::default();
     for f in files {
         let Some(v) = read_json(&f.to_string_lossy()) else { continue };
         let oa = &v["oauthAccount"];
         if let (Some(u), Some(e)) = (oa["accountUuid"].as_str(), oa["emailAddress"].as_str()) {
-            let name = oa["displayName"].as_str().or(oa["fullName"].as_str()).unwrap_or("");
+            let name = oa["displayName"].as_str()
+                .filter(|x| !x.is_empty())
+                .or(oa["fullName"].as_str()).unwrap_or("");
+            from_json.insert(u.to_string(), name.to_string());
             known[u] = json!({ "email": e, "name": name });
         }
     }
-    // what IndexedDB found is current; keep an earlier name if it has none
+    // IndexedDB knows who is signed in right now, but its name is scraped out of a
+    // binary and can come back truncated ("ahka" for "ahkamboh"), so a parsed
+    // oauthAccount field wins over it.
     if let Some(o) = found.as_object() {
         for (k, v) in o {
-            let mut n = v.clone();
-            if n["name"].as_str().unwrap_or("").is_empty() {
-                if let Some(prev) = known[k.as_str()]["name"].as_str().map(String::from) { n["name"] = json!(prev); }
-            }
-            known[k.as_str()] = n;
+            let prev = known[k.as_str()]["name"].as_str().unwrap_or("").to_string();
+            let name = from_json.get(k)
+                .filter(|x| !x.is_empty()).cloned()
+                .or_else(|| v["name"].as_str().filter(|x| !x.is_empty()).map(String::from))
+                .unwrap_or(prev);
+            let email = v["email"].as_str()
+                .filter(|x| !x.is_empty()).map(String::from)
+                .unwrap_or_else(|| known[k.as_str()]["email"].as_str().unwrap_or("").to_string());
+            known[k.as_str()] = json!({ "email": email, "name": name });
         }
     }
     if known != before {
