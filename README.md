@@ -106,6 +106,18 @@ open ~/Applications/Ferry.app
 
 `build.sh` compiles the Rust binary, bundles `Ferry.app`, and installs it to `~/Applications`.
 
+**Windows installer.** With Node.js as well, this builds both `Ferry.exe` and an installer,
+`src-tauri/target/release/bundle/nsis/Ferry_<version>_x64-setup.exe`:
+
+```bash
+npx @tauri-apps/cli@2 build --bundles nsis
+```
+
+The installer needs no admin rights: it installs Ferry for the current user under
+`%LOCALAPPDATA%\Programs`, adds it to the Start menu, registers an uninstaller in
+Settings → Apps, and fetches the WebView2 runtime if the machine lacks it. The **Windows
+build** workflow in Actions produces both files as well.
+
 ## CLI
 
 `ferry-cli.py` uses only the Python 3 standard library — no `pip install`, no virtualenv.
