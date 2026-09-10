@@ -186,7 +186,51 @@ fn profiles() -> Value {
             out[uuid] = json!({ "email": email, "name": name });
         }
     }
+    #[cfg(target_os = "windows")]
+    known_profiles(&mut out);
     out
+}
+
+/// IndexedDB only knows the signed-in account, and Claude keeps it locked while
+/// it runs. Claude Code's own config names its account too - "oauthAccount" in
+/// ~/.claude.json and its backups - and account switchers such as claude-swap
+/// keep one copy of that file per account. Every account seen in any of them is
+/// remembered in ~/.ferry/profiles.json, so it keeps its name after sign-out.
+#[cfg(target_os = "windows")]
+fn known_profiles(found: &mut Value) {
+    let h = home();
+    let cache = format!("{}/profiles.json", vault());
+    let mut known = read_json(&cache).filter(|v| v.is_object()).unwrap_or_else(|| json!({}));
+    let before = known.clone();
+    let mut files: Vec<PathBuf> = vec![PathBuf::from(format!("{}/.claude.json", h)),
+                                       PathBuf::from(format!("{}/.claude.json.backup", h))];
+    for pat in [format!("{}/.claude/backups/.claude.json.backup*", h),
+                format!("{}/.claude-swap-backup/configs/*.json", h)] {
+        if let Ok(g) = glob::glob(&pat) { files.extend(g.flatten()); }
+    }
+    for f in files {
+        let Some(v) = read_json(&f.to_string_lossy()) else { continue };
+        let oa = &v["oauthAccount"];
+        if let (Some(u), Some(e)) = (oa["accountUuid"].as_str(), oa["emailAddress"].as_str()) {
+            let name = oa["displayName"].as_str().or(oa["fullName"].as_str()).unwrap_or("");
+            known[u] = json!({ "email": e, "name": name });
+        }
+    }
+    // what IndexedDB found is current; keep an earlier name if it has none
+    if let Some(o) = found.as_object() {
+        for (k, v) in o {
+            let mut n = v.clone();
+            if n["name"].as_str().unwrap_or("").is_empty() {
+                if let Some(prev) = known[k.as_str()]["name"].as_str().map(String::from) { n["name"] = json!(prev); }
+            }
+            known[k.as_str()] = n;
+        }
+    }
+    if known != before {
+        let _ = fs::create_dir_all(vault());
+        let _ = fs::write(&cache, serde_json::to_string_pretty(&known).unwrap());
+    }
+    *found = known;
 }
 
 /// Every transcript that makes up one chat: current + prior sessions + their subagents.

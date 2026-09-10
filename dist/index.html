@@ -60,6 +60,7 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
  font-size:10.5px;font-weight:700;color:#fff;letter-spacing:.02em}
 .acct .who{font-size:12.5px;font-weight:560;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .acct .mt{font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums;margin-top:1px}
+.acct .em{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
 .acct .bd{min-width:0;flex:1}
 .dotc{width:6px;height:6px;border-radius:99px;background:var(--ok);display:inline-block;margin-right:4px}
 .secl{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);
@@ -416,8 +417,11 @@ function closeChat(){if(!chatPath)return;
 const closeAsk=()=>{const a=$("#ask");a.className="";a.innerHTML="";};
 function chatAt(p){for(const s of S.scopes)for(const c of s.chats)if(c.path===p)return [s,c];return [];}
 // The card names an account by the part before the @; hovering shows the rest.
-const short=s=>label(s).split("@")[0];
-const whoTip=s=>label(s)+"\nAccount "+s.acct.slice(0,8)+(s.isCurrent?" · signed in now":"");
+// An account is named by its nickname, else its Claude display name, else the
+// part of its address before the @; hovering shows everything known about it.
+const short=s=>s.label||(s.profile&&s.profile.name)||label(s).split("@")[0];
+const whoTip=s=>[s.label,s.profile&&s.profile.name,s.profile&&s.profile.email]
+  .filter((x,i,a)=>x&&a.indexOf(x)===i).concat("Account "+s.acct.slice(0,8)+(s.isCurrent?" · signed in now":"")).join("\n");
 const avatar=s=>'<span class=av style="background:hsl('+hue(s.acct)+' 42% 48%)">'+
   esc(((s.profile&&s.profile.name)||label(s)).slice(0,2).toUpperCase())+'</span>';
 function who(s,id){
@@ -597,10 +601,13 @@ function diagPanel(){
 function drawSide(){
   const s0=scope();
   $("#side").innerHTML='<div class=secl>accounts</div>'+S.scopes.map(s=>{
-    const nm=label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
-    return '<div class="acct '+(key(s)===scopeKey?'on':'')+'" data-k="'+key(s)+'" onclick="pick(\''+key(s)+'\')">'+
+    const nm=WIN?short(s):label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
+    const em=WIN&&s.profile&&s.profile.email;                    // Windows: name, then address
+    return '<div class="acct '+(key(s)===scopeKey?'on':'')+'" data-k="'+key(s)+'" onclick="pick(\''+key(s)+'\')"'+
+        (WIN?' title="'+esc(whoTip(s))+'"':'')+'>'+
       '<div class=av style="background:hsl('+hue(s.acct)+' 42% 48%)">'+esc(ini)+'</div>'+
       '<div class=bd><div class=who>'+(s.isCurrent?'<span class=dotc></span>':'')+esc(nm)+'</div>'+
+      (em?'<div class=em>'+esc(em)+'</div>':'')+
       '<div class=mt>'+s.chats.length+' chats'+(s.deleted.length?' · '+s.deleted.length+' deleted':'')+'</div>'+
       '</div></div>';}).join("")
    +(s0?'<div class=secl>rename</div><div style="padding:0 9px"><input id=nick placeholder="name this account" value="'+
