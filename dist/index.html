@@ -264,7 +264,10 @@ const fmt=b=>b>=1048576?(b/1048576).toFixed(1)+" MB":Math.max(1,Math.round(b/102
 const day=m=>m?new Date(m).toISOString().slice(0,10):"-";
 const hue=s=>{let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))%360;return h;};
 const APP_NAME="Ferry";                       // one place to change the product name
-const WIN=/Windows/.test(navigator.userAgent);   // Windows-only fixes; macOS keeps its behaviour
+const WIN=/Windows/.test(navigator.userAgent);   // genuinely platform-specific bits only
+const RICH=true;                                 // the loading / confirm / mascot UI: on everywhere
+const MAC=/Mac/.test(navigator.platform||navigator.userAgent);
+const MODK=e=>MAC?e.metaKey:e.ctrlKey;           // Cmd on a Mac, Ctrl elsewhere
 const MARK=`<svg class=mk viewBox="0 0 100 100" aria-hidden=true>\n <defs><mask id="gap">\n <rect width="100" height="100" fill="#fff"/>\n <rect x="57.4" y="38.9" width="18.6" height="11.8" fill="#000"/>\n </mask></defs>\n <path mask="url(#gap)" fill="currentColor" fill-rule="evenodd"\n d="M33 26.9h24.6a11.2 11.2 0 0 1 11.2 11.2v14.8a11.2 11.2 0 0 1-11.2 11.2H33\n A11.2 11.2 0 0 1 21.8 52.9V38.1A11.2 11.2 0 0 1 33 26.9Z\n M33.9 32.9h22.8a6 6 0 0 1 6 6v13.2a6 6 0 0 1-6 6H33.9a6 6 0 0 1-6-6V38.9a6 6 0 0 1 6-6Z"/>\n <path mask="url(#gap)" fill="currentColor" d="M31.2 63.4h14.1l-15 13.4Z"/>\n <rect x="42.5" y="42" width="33.5" height="5.6" rx="2.8" fill="#d97757"/>\n <path fill="#d97757" d="M81.2 44.8 70.8 37.9v13.8Z"/>\n </svg>`;
 let S=null,scopeKey=null,chatPath=null,q="",dragged=null;
 
@@ -383,32 +386,35 @@ async function transfer(path,t,mv){
     toast(ok);
   }finally{closeAsk();busyOn=false;}
 }
-// The loading states, busy card and right-click menu are Windows-only (WIN);
-// on macOS every path below falls through to the original behaviour.
-const refresh=()=>WIN?busy("Reading your chats…",load):load();
+// The loading states, confirm card and mascot run on every platform (RICH).
+// Only the right-click menu and the Store wording stay Windows-only (WIN).
+const refresh=()=>RICH?busy("Reading your chats…",load):load();
 
 /* ---------- right-click (Windows) ----------
    WebView2's own menu (Back, Reload, Save as, Print…) means nothing in an
    app, so it is replaced by one item. Text fields keep theirs for cut/paste.
    F5 and Ctrl+R re-read from disk instead of reloading the page. */
+const hideCtx=()=>$("#ctx").className="";
 if(WIN){
-  const hideCtx=()=>$("#ctx").className="";
+  // WebView2's own menu (Back, Reload, Print) means nothing in an app.
+  // macOS keeps its native menu, which is already sensible.
   document.addEventListener("contextmenu",e=>{
     if(e.target.closest("input,textarea"))return;
     e.preventDefault();const m=$("#ctx");m.className="on";
     m.style.left=Math.min(e.clientX,innerWidth-m.offsetWidth-8)+"px";
     m.style.top=Math.min(e.clientY,innerHeight-m.offsetHeight-8)+"px";});
-  const hideMenus=()=>{hideCtx();$("#pmenu").className="";
-    const p=$("#pick");if(p)p.setAttribute("aria-expanded","false");};
-  document.addEventListener("click",hideMenus);
-  addEventListener("blur",hideMenus);
-  document.addEventListener("keydown",e=>{
-    if(e.key==="Escape"){hideMenus();if(!busyOn)closeAsk();}        // a card mid-trip stays up
-    if(e.key==="Enter"&&$("#ask").className&&!busyOn){e.preventDefault();   // confirm: the focused card button, else the primary
-      const f=document.activeElement;(f&&f.tagName==="BUTTON"&&f.closest("#ask")?f:$("#ask .btn.p")).click();}
-    if(e.key==="F5"||(e.ctrlKey&&e.key.toLowerCase()==="r")){e.preventDefault();hideCtx();refresh();}
-    if(e.ctrlKey&&e.key.toLowerCase()==="w"){e.preventDefault();closeChat();}});
 }
+// shared: the confirm card, its keys, and closing a chat exist on every platform
+const hideMenus=()=>{hideCtx();$("#pmenu").className="";
+  const p=$("#pick");if(p)p.setAttribute("aria-expanded","false");};
+document.addEventListener("click",hideMenus);
+addEventListener("blur",hideMenus);
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape"){hideMenus();if(!busyOn)closeAsk();}        // a card mid-trip stays up
+  if(e.key==="Enter"&&$("#ask").className&&!busyOn){e.preventDefault();   // confirm: the focused card button, else the primary
+    const f=document.activeElement;(f&&f.tagName==="BUTTON"&&f.closest("#ask")?f:$("#ask .btn.p")).click();}
+  if(e.key==="F5"||(MODK(e)&&e.key.toLowerCase()==="r")){e.preventDefault();hideCtx();refresh();}
+  if(MODK(e)&&e.key.toLowerCase()==="w"){e.preventDefault();closeChat();}});
 
 /* ---------- close and confirm (Windows) ---------- */
 function closeChat(){if(!chatPath)return;
@@ -601,10 +607,10 @@ function diagPanel(){
 function drawSide(){
   const s0=scope();
   $("#side").innerHTML='<div class=secl>accounts</div>'+S.scopes.map(s=>{
-    const nm=WIN?short(s):label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
-    const em=WIN&&s.profile&&s.profile.email;                    // Windows: name, then address
+    const nm=RICH?short(s):label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
+    const em=RICH&&s.profile&&s.profile.email;                    // Windows: name, then address
     return '<div class="acct '+(key(s)===scopeKey?'on':'')+'" data-k="'+key(s)+'" onclick="pick(\''+key(s)+'\')"'+
-        (WIN?' title="'+esc(whoTip(s))+'"':'')+'>'+
+        (RICH?' title="'+esc(whoTip(s))+'"':'')+'>'+
       '<div class=av style="background:hsl('+hue(s.acct)+' 42% 48%)">'+esc(ini)+'</div>'+
       '<div class=bd><div class=who>'+(s.isCurrent?'<span class=dotc></span>':'')+esc(nm)+'</div>'+
       (em?'<div class=em>'+esc(em)+'</div>':'')+
@@ -622,7 +628,7 @@ function drawSide(){
   // Windows: accept dragenter as well as dragover - a strict drop target needs
   // both, or the pointer over an account's name or avatar shows "no drop" -
   // and only clear the highlight when the pointer really leaves the account.
-  if(WIN)document.querySelectorAll(".acct").forEach(el=>{
+  if(RICH)document.querySelectorAll(".acct").forEach(el=>{
     const ok=()=>dragged&&el.dataset.k!==scopeKey;
     el.ondragenter=e=>{if(ok()){e.preventDefault();el.classList.add("drop");}};
     el.ondragover=e=>{if(ok()){e.preventDefault();e.dataTransfer.dropEffect="copy";el.classList.add("drop");}};
@@ -648,14 +654,14 @@ function drawList(){
     el.ondragstart=()=>dragged=el.dataset.p; el.ondragend=()=>dragged=null;});
   // Windows: give the drag a payload and say it can copy or move; a drag that
   // carries no data can be treated as having nothing to drop
-  if(WIN)document.querySelectorAll(".ch[draggable]").forEach(el=>el.ondragstart=e=>{dragged=el.dataset.p;
+  if(RICH)document.querySelectorAll(".ch[draggable]").forEach(el=>el.ondragstart=e=>{dragged=el.dataset.p;
     e.dataTransfer.effectAllowed="copyMove";e.dataTransfer.setData("text/plain",el.querySelector(".t").textContent);});
 }
 
 function askDrop(e,k){
   const p=dragged;if(!p)return;
   const t=S.scopes.find(s=>key(s)===k),d=$("#drop");
-  if(WIN)return ask(p,t,null);                                  // Windows: the choice is made on the card
+  if(RICH)return ask(p,t,null);                                  // Windows: the choice is made on the card
   d.style.left=Math.min(e.clientX,innerWidth-200)+"px";
   d.style.top=Math.min(e.clientY,innerHeight-56)+"px";
   d.className="on";
@@ -667,7 +673,7 @@ function askDrop(e,k){
 }
 
 async function openChat(p){chatPath=p;drawList();
-  if(!WIN){try{drawRead(await iv("chat_detail",{path:p}));}catch(e){toast(String(e),true);}return;}
+  if(!RICH){try{drawRead(await iv("chat_detail",{path:p}));}catch(e){toast(String(e),true);}return;}
   // a long transcript takes a moment to read: show the ferry rather than a stale chat
   const t=setTimeout(()=>{$("#read").innerHTML='<div class=loading>'+mascot()+'<div>Opening chat…</div></div>';wake();},120);
   try{const d=await iv("chat_detail",{path:p});clearTimeout(t);
@@ -681,7 +687,7 @@ function drawRead(d){
   const meta=esc((r.model||"").replace("claude-",""))+' · '+(r.completedTurns||0)+
        ' turns · '+day(r.createdAt)+' → '+day(r.lastActivityAt)+' · '+d.files.length+
        ' transcripts · '+fmt(d.bytes)+(d.subs?' · '+d.subs+' subagent':'');
-  const ttl='<input id=ttl value="'+esc(r.title)+'" onchange=doRename()'+(WIN?' title="'+meta+'"':'')+'>';
+  const ttl='<input id=ttl value="'+esc(r.title)+'" onchange=doRename()'+(RICH?' title="'+meta+'"':'')+'>';
   const fileops=
        '<select id=fmt title="File format for the download">'+
          '<option value=md>Markdown</option><option value=txt>Plain text</option>'+
@@ -690,8 +696,8 @@ function drawRead(d){
          esc((S.exportDir||"~/Downloads").replace(/^\/Users\/[^\/]+/,"~"))+'">Download</button>'+
        '<button class="btn d" onclick=doDelete()>Delete</button>';
   $("#read").innerHTML=
-   '<div id=rhead'+(WIN?' class=x':'')+'>'+
-     (WIN?'<button class=xbtn onclick=closeChat() title="Close chat (Ctrl+W)" aria-label="Close chat">'+
+   '<div id=rhead'+(RICH?' class=x':'')+'>'+
+     (RICH?'<button class=xbtn onclick=closeChat() title="Close chat (Ctrl+W)" aria-label="Close chat">'+
        '<svg width=12 height=12 viewBox="0 0 12 12" aria-hidden=true><path d="M2 2l8 8M10 2l-8 8" '+
        'stroke=currentColor stroke-width=1.6 stroke-linecap=round /></svg></button>'+
        // Windows: the file actions share the title's row (the details live in its
@@ -724,7 +730,7 @@ async function op(cmd,args,ok,msg,o){
     if(chatPath&&cmd!=="delete_chat"){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){drawRead(null);}}
     else drawRead(null);return r;}
   catch(e){toast(String(e),true);}};
-  return msg&&WIN?busy(msg,run,o):run();}   // no card for delete: its own dialog is already up
+  return msg&&RICH?busy(msg,run,o):run();}   // no card for delete: its own dialog is already up
 async function doExport(){
   try{ const r=await iv("export_chat",{path:chatPath,fmt:$("#fmt").value,ask:true});
        if(r.cancelled) return toast("Download cancelled");
@@ -734,9 +740,9 @@ async function doExport(){
 }
 const doRename=()=>op("rename_chat",{path:chatPath,title:$("#ttl").value},"Renamed","Renaming…");
 const doDelete=()=>op("delete_chat",{path:chatPath},"Deleted");
-function btnSend(mv){const t=S.scopes.find(x=>key(x)===(WIN?tgtKey:$("#tgt").value));
-  WIN?ask(chatPath,t,mv):send(chatPath,t,mv);}
-function send(path,t,mv){if(WIN)return transfer(path,t,mv);
+function btnSend(mv){const t=S.scopes.find(x=>key(x)===(RICH?tgtKey:$("#tgt").value));
+  RICH?ask(chatPath,t,mv):send(chatPath,t,mv);}
+function send(path,t,mv){if(RICH)return transfer(path,t,mv);
   op("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv},
   (mv?"Moved to ":"Copied to ")+label(t));}
 const undel=id=>{const s=scope();op("undelete_chat",{acct:s.acct,org:s.org,id:id},"Restored","Restoring…");};
@@ -745,9 +751,9 @@ async function backup(){
   try{const r=await iv("run_vault");
     toast("Backed up "+r.records+" chats · "+r.transcripts+" new files · "+r.mb+" MB");}
   catch(e){toast(String(e),true);}}
-function vault(){if(WIN)return busy("Backing up every chat…",backup,{now:true});
+function vault(){if(RICH)return busy("Backing up every chat…",backup,{now:true});
   toast("Backing up...");return backup();}
-if(WIN){
+if(RICH){
   drawSkeleton();         // held at least 700 ms so a fast scan reads as loading, not a flicker
   load(new Promise(z=>setTimeout(z,700))).then(()=>{if(S.scopes.length)drawRead(null);})
       .catch(e=>{$("#read").innerHTML='<div class=empty style="color:var(--warn)">'+esc(e)+'</div>';});
