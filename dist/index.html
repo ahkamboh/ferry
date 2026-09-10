@@ -191,15 +191,11 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 .askc p b{color:var(--ink);font-weight:600}
 .askc .warn{color:var(--warn)}
 .askb{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
-.trip{display:flex;align-items:center;gap:14px}
-.trip .cap{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);font-weight:700;margin:0 0 5px 2px}
-.trip .mascot{width:92px;flex:none}
-.acchip{display:flex;max-width:190px;padding:6px 11px 6px 6px;border:1px solid var(--line);border-radius:10px;
- background:var(--panel);font-size:12px;font-weight:560;transition:opacity .3s,border-color .3s}
-.acchip .who{display:flex;align-items:center;gap:8px;min-width:0}
-.acchip .who>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.acchip.in{border-color:var(--accent)}
-.acchip.out{opacity:.45}
+.route .who{transition:opacity .3s}
+.route .who.in>span:last-child{color:var(--accent)}             /* where the chat landed */
+.route .who.in .av{box-shadow:0 0 0 2px var(--bg),0 0 0 3.5px var(--accent)}
+.route .who.out{opacity:.45}                                   /* where a moved chat left */
+.askc .stat{margin-top:16px;text-align:center;font-size:13px;font-weight:560;color:var(--ink)}
 </style></head><body>
 
 <div id=bar>
@@ -306,24 +302,27 @@ async function busy(msg,fn,o={}){
 }
 
 /* ---------- transfer (Windows) ----------
-   Copy or move with the mascot between the two accounts: from-chip, mascot,
-   to-chip. The chat always makes at least one full trip, even when the write
+   Copy or move inside the confirm card: once confirmed the card stays up, its
+   mascot carries the chat between the two accounts, and it closes after the
+   cheer. The chat always makes at least one full trip, even when the write
    lands at once; a slow write keeps it making trips, and the cheer follows
    the trip that finds the write done. A failed write stops the animation at
    once, so a refusal never looks like a success. */
 const LOOK=[{look:1},{look:1},{look:1}],TRIP=[],CHEER=Array(7).fill(HAPPY);
 for(let i=0;i<=11;i++)TRIP.push({look:1,cargo:i/11});
-const chip=(s,id)=>'<span class=acchip id='+id+'>'+who(s)+'</span>';
 async function transfer(path,t,mv){
   if(busyOn)return;busyOn=true;
-  const [s=scope()]=chatAt(path),b=$("#busy"),ok=(mv?"Moved to ":"Copied to ")+label(t);
+  const a=$("#ask"),ok=(mv?"Moved to ":"Copied to ")+label(t);
   let err=null,landed=false;
   try{
-    $("#bm").innerHTML='<div class=trip><div><div class=cap>from</div>'+chip(s,"tfrom")+'</div>'+
-      mascot().replace("class=mascot","class='mascot own'")+
-      '<div><div class=cap>to</div>'+chip(t,"tto")+'</div></div>';
-    $("#bmsg").textContent=(mv?"Moving to ":"Copying to ")+label(t)+"…";b.className="on";
-    const m=$("#bm .own"),play=fs=>new Promise(z=>{let i=0;(function f(){
+    if(!a.className)ask(path,t,mv);                              // it always runs in the card
+    if(!a.className)return;
+    a.onclick=null;                                              // no cancelling mid-trip
+    $("#askh").textContent=mv?"Moving this chat…":"Copying this chat…";
+    a.querySelectorAll(".askc p").forEach(x=>x.remove());
+    a.querySelector(".askb").outerHTML='<p class=stat id=astat>'+esc((mv?"Moving to ":"Copying to ")+label(t))+'…</p>';
+    const m=a.querySelector(".route .mascot");m.classList.add("own");   // the idle loop lets go of it
+    const play=fs=>new Promise(z=>{let i=0;(function f(){
       if(i>=fs.length||err)return z();m.innerHTML=drawMascot(fs[i++]);setTimeout(f,110);})();});
     const work=iv("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv})
       .then(()=>{},e=>{err=String(e);}).finally(()=>{landed=true;});
@@ -331,14 +330,15 @@ async function transfer(path,t,mv){
     else{await play(LOOK);do{await play(TRIP);}while(!landed&&!err);}
     await work;
     if(err)return toast(err,true);
-    $("#bmsg").textContent=ok;$("#tto").classList.add("in");if(mv)$("#tfrom").classList.add("out");
+    $("#askh").textContent=mv?"Chat moved":"Chat copied";$("#astat").textContent=ok;
+    $("#tto").classList.add("in");if(mv)$("#tfrom").classList.add("out");
     await Promise.all([                            // cheer while the lists redraw behind the card
       still?(m.innerHTML=drawMascot(HAPPY),new Promise(z=>setTimeout(z,700))):play(CHEER),
       (async()=>{await load();
         if(chatPath){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){drawRead(null);}}
         else drawRead(null);})()]);
     toast(ok);
-  }finally{b.className="";busyOn=false;}
+  }finally{closeAsk();busyOn=false;}
 }
 // The loading states, busy card and right-click menu are Windows-only (WIN);
 // on macOS every path below falls through to the original behaviour.
@@ -358,8 +358,8 @@ if(WIN){
   document.addEventListener("click",hideCtx);
   addEventListener("blur",hideCtx);
   document.addEventListener("keydown",e=>{
-    if(e.key==="Escape"){hideCtx();closeAsk();}
-    if(e.key==="Enter"&&$("#ask").className){e.preventDefault();   // confirm: the focused card button, else the primary
+    if(e.key==="Escape"){hideCtx();if(!busyOn)closeAsk();}          // a card mid-trip stays up
+    if(e.key==="Enter"&&$("#ask").className&&!busyOn){e.preventDefault();   // confirm: the focused card button, else the primary
       const f=document.activeElement;(f&&f.tagName==="BUTTON"&&f.closest("#ask")?f:$("#ask .btn.p")).click();}
     if(e.key==="F5"||(e.ctrlKey&&e.key.toLowerCase()==="r")){e.preventDefault();hideCtx();refresh();}
     if(e.ctrlKey&&e.key.toLowerCase()==="w"){e.preventDefault();closeChat();}});
@@ -371,8 +371,8 @@ function closeChat(){if(!chatPath)return;
   chatPath=null;drawList();drawRead(null);}
 const closeAsk=()=>{const a=$("#ask");a.className="";a.innerHTML="";};
 function chatAt(p){for(const s of S.scopes)for(const c of s.chats)if(c.path===p)return [s,c];return [];}
-function who(s){const nm=label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
-  return '<span class=who><span class=av style="background:hsl('+hue(s.acct)+' 42% 48%)">'+esc(ini)+
+function who(s,id){const nm=label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
+  return '<span class=who id='+id+'><span class=av style="background:hsl('+hue(s.acct)+' 42% 48%)">'+esc(ini)+
     '</span><span>'+esc(nm)+'</span></span>';}
 // Say exactly what a copy or move will do before doing it. mv is true or
 // false from the buttons, or null after a drag, when the card offers both.
@@ -382,7 +382,7 @@ function ask(p,t,mv){
   a.innerHTML='<div class=askc role=dialog aria-modal=true aria-labelledby=askh>'+
     '<h3 id=askh>'+(mv===null?'Copy or move this chat?':mv?'Move this chat?':'Copy this chat?')+'</h3>'+
     '<div class=ct>'+esc(c.title)+'</div>'+
-    '<div class=route>'+who(s)+mascot()+who(t)+'</div>'+     // the trip it is about to make
+    '<div class=route>'+who(s,"tfrom")+mascot()+who(t,"tto")+'</div>'+   // the trip it is about to make
     (mv!==true?'<p><b>Copy</b> adds it to '+to+' and keeps it in '+from+'.</p>':'')+
     (mv!==false?'<p><b>Move</b> adds it to '+to+' and removes it from '+from+
       ', where you can restore it from the deleted list.</p>':'')+
@@ -394,8 +394,8 @@ function ask(p,t,mv){
   a.className="on";wake();
   $("#an").onclick=closeAsk;
   a.onclick=e=>{if(e.target===a)closeAsk();};                  // a click outside the card cancels
-  if($("#am"))$("#am").onclick=()=>{closeAsk();send(p,t,true);};
-  if($("#ac"))$("#ac").onclick=()=>{closeAsk();send(p,t,false);};
+  if($("#am"))$("#am").onclick=()=>send(p,t,true);             // the card stays: transfer() runs in it
+  if($("#ac"))$("#ac").onclick=()=>send(p,t,false);
   a.querySelector(".btn.p").focus();                           // Enter confirms, Esc cancels
 }
 
