@@ -9,6 +9,8 @@
                                                   to an account
   ./ferry-cli.py folder <text|id> <path>          point a chat at the folder
                                                   it belongs to
+  ./ferry-cli.py cursor                           list Cursor's conversations
+  ./ferry-cli.py cursor-import <text|id> <account>  convert one into a Claude chat
 
 Chats started in the CLI or in VS Code have no per-account record, so Claude
 lists them nowhere. "list" shows them under the accounts; "import" gives one a
@@ -238,7 +240,8 @@ def transcripts_for(rec):
 
 SOURCES = {"cli":            ("cli",     "Claude Code CLI"),
            "claude-vscode":  ("vscode",  "VS Code"),
-           "claude-desktop": ("desktop", "Desktop, no record")}
+           "claude-desktop": ("desktop", "Desktop, no record"),
+           "cursor":         ("cursor",  "Cursor")}
 INDEX = f"{VAULT}/sessions.json"
 # bumped whenever what is read out of a transcript changes, so an index written
 # by an older Ferry is re-read rather than believed
@@ -925,6 +928,226 @@ def cmd_folder(query, folder):
     print(f"  now: {r['cwd']}")
     print(f"  transcripts: {r['linked']} linked, {r['copied']} copied")
 
+# ---------- Cursor ----------
+# Cursor is a separate application with a storage of its own: one SQLite file
+# holding every conversation, not a folder of transcripts. A chat is a row in
+# composerHeaders, an ordered list of bubble ids in composerData:<id>, and one
+# bubbleId:<chat>:<bubble> row per message. Nothing about it resembles the
+# JSONL Claude Code appends, so a chat cannot be moved between them - it has to
+# be converted, and the conversion only goes one way. Writing into Cursor's
+# database would mean inserting rows into a live 1 GB file that Cursor holds
+# open, where a mistake costs every conversation in it, so Ferry never does.
+# Every read here is mode=ro.
+
+if sys.platform == "win32":
+    CURSOR = os.path.join(os.environ.get("APPDATA", ""), "Cursor", "User")
+elif sys.platform == "darwin":
+    CURSOR = f"{HOME}/Library/Application Support/Cursor/User"
+else:
+    CURSOR = f"{HOME}/.config/Cursor/User"
+
+def cursor_db():
+    p = os.path.join(CURSOR, "globalStorage", "state.vscdb")
+    return p if os.path.exists(p) else None
+
+def cursor_ro(path):
+    """Read-only, and never anything else."""
+    import sqlite3
+    return sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"), uri=True)
+
+def cursor_folders():
+    """Which folder each Cursor workspace is: workspace.json names it as a URI."""
+    import urllib.parse
+    out = {}
+    for f in glob.glob(os.path.join(CURSOR, "workspaceStorage", "*", "workspace.json")):
+        try: j = json.load(open(f, encoding="utf-8"))
+        except Exception: continue
+        uri = j.get("folder") or ""
+        if not uri.startswith("file:///"): continue
+        p = urllib.parse.unquote(uri[len("file:///"):])
+        p = p.replace("/", os.sep) if sys.platform == "win32" else "/" + p
+        out[os.path.basename(os.path.dirname(f))] = p
+    return out
+
+def cursor_chats():
+    """Every Cursor conversation that has anything in it. Most headers are empty
+    shells left behind by windows that were opened and closed."""
+    db = cursor_db()
+    if not db: return []
+    ws, out = cursor_folders(), []
+    c = cursor_ro(db)
+    try:
+        rows = list(c.execute("""select composerId, workspaceId, createdAt, lastUpdatedAt,
+                                        isArchived, isSubagent, value
+                                 from composerHeaders order by lastUpdatedAt desc"""))
+    except Exception:
+        return []
+    for cid, wid, created, updated, arch, sub, val in rows:
+        if sub: continue                      # a subagent's own side conversation
+        r = c.execute("select value from cursorDiskKV where key=?",
+                      ("composerData:" + cid,)).fetchone()
+        if not r: continue
+        try: data = json.loads(r[0]) or {}
+        except Exception: continue
+        heads = data.get("fullConversationHeadersOnly") or []
+        if not heads: continue
+        try: name = (json.loads(val) or {}).get("name") or ""
+        except Exception: name = ""
+        out.append({"id": cid, "title": name or "(unnamed)",
+                    "folder": ws.get(str(wid), ""), "created": created,
+                    "last": updated, "archived": bool(arch), "bubbles": len(heads)})
+    return out
+
+def _tool_line(t):
+    """One tool call, said in a line. Cursor keeps the arguments as raw JSON;
+    the path or command in them is the part worth reading."""
+    name = t.get("name") or t.get("tool") or "tool"
+    hint = ""
+    try:
+        a = json.loads(t.get("rawArgs") or "{}")
+        if isinstance(a, dict):
+            for k in ("path", "target_file", "file", "command", "query", "pattern", "explanation"):
+                if a.get(k): hint = str(a[k]); break
+            if not hint and a: hint = json.dumps(a)[:120]
+    except Exception: pass
+    return f"-> {name}({hint[:120]})" if hint else f"-> {name}()"
+
+def cursor_messages(cid):
+    """One Cursor conversation as plain turns, oldest first.
+
+    Most bubbles carry no prose at all - in a 4,563 bubble chat only a couple of
+    hundred do, and three thousand are tool calls. Dropping those would throw
+    away what the conversation actually did, so a run of them is folded into the
+    message before it as one line each. They are written as text, not as
+    tool_use blocks: a tool_use has to be answered by a tool_result or the
+    conversation is malformed, and there is nothing here to answer it with."""
+    db = cursor_db()
+    if not db: return []
+    c = cursor_ro(db)
+    r = c.execute("select value from cursorDiskKV where key=?", ("composerData:" + cid,)).fetchone()
+    if not r: return []
+    heads = (json.loads(r[0]) or {}).get("fullConversationHeadersOnly") or []
+    out, pending = [], []
+
+    def flush(ts):
+        if not pending: return
+        out.append({"role": "assistant", "text": "\n".join(pending), "t": ts})
+        pending.clear()
+
+    for h in heads:
+        b = c.execute("select value from cursorDiskKV where key=?",
+                      ("bubbleId:%s:%s" % (cid, h.get("bubbleId")),)).fetchone()
+        if not b: continue
+        try: d = json.loads(b[0]) or {}
+        except Exception: continue
+        ts = h.get("createdAt") or d.get("createdAt") or ""
+        text = (d.get("text") or "").strip()
+        role = "user" if d.get("type") == 1 else "assistant"
+        if text:
+            if role == "user": flush(ts)
+            elif pending: text = "\n".join(pending) + "\n\n" + text; pending.clear()
+            out.append({"role": role, "text": text, "t": ts})
+        elif d.get("toolFormerData"):
+            pending.append(_tool_line(d["toolFormerData"]))
+    flush(out[-1]["t"] if out else "")
+    return out
+
+def write_transcript(path, msgs, cwd, sid):
+    """A Claude Code transcript, written from turns that came from somewhere
+    else. The shape is the one Claude Code appends: one JSON object a line,
+    each linked to the one before it. entrypoint says where it really came from
+    so nothing later mistakes it for a session Claude Code ran itself."""
+    import uuid as _uuid
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    prev = None
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        for m in msgs:
+            u = str(_uuid.uuid4())
+            fh.write(json.dumps({
+                "parentUuid": prev, "isSidechain": False, "userType": "external",
+                "type": m["role"], "message": {"role": m["role"], "content": m["text"]},
+                "uuid": u, "timestamp": m["t"], "cwd": cwd, "sessionId": sid,
+                "gitBranch": "", "entrypoint": "cursor",
+            }, ensure_ascii=False) + "\n")
+            prev = u
+    return path
+
+def op_cursor_import(cid, acct, org, force=False):
+    """Convert one Cursor conversation into a Claude chat.
+
+    This is the one place Ferry writes a transcript rather than only the little
+    record beside it, because there is no transcript to point at - Cursor keeps
+    its conversations in a database. The file is named after the Cursor
+    conversation, so converting the same chat twice rewrites the one file
+    instead of leaving a second copy."""
+    guard(force)
+    hit = [x for x in cursor_chats() if x["id"] == cid or x["id"].startswith(cid)]
+    if not hit: raise RuntimeError(f"no Cursor chat {cid!r}")
+    chat = hit[0]
+    if not chat["folder"]:
+        raise RuntimeError("that Cursor chat has no folder on this machine")
+    if not os.path.isdir(scope_dir(acct, org)):
+        raise RuntimeError("that account has no folder on this machine")
+    msgs = cursor_messages(chat["id"])
+    if not msgs: raise RuntimeError("that Cursor chat has nothing readable in it")
+
+    dst = os.path.join(project_dir(chat["folder"]), chat["id"] + ".jsonl")
+    write_transcript(dst, msgs, chat["folder"], chat["id"])
+    rec = op_import(dst, acct, org, force=force)
+    # the record's title comes from the first prompt; Cursor already named it
+    if chat["title"] and chat["title"] != "(unnamed)":
+        op_rename(rec["wrote"], chat["title"], force=force)
+        rec["title"] = chat["title"]
+    rec["messages"] = len(msgs)
+    rec["transcript"] = dst
+    return rec
+
+def cmd_cursor():
+    if not cursor_db():
+        return print(f"no Cursor storage here\n  looked in: {CURSOR}")
+    chats = cursor_chats()
+    if not chats: return print("Cursor is installed but has no conversations with anything in them")
+    by = {}
+    for x in chats: by.setdefault(x["folder"] or "(no folder)", []).append(x)
+    print(f"{len(chats)} Cursor chats   ({cursor_db()})\n")
+    for folder, xs in by.items():
+        print(folder)
+        for x in xs:
+            print("  %-9s %-40s %5d bubbles  %s%s" %
+                  (x["id"][:8], x["title"][:40], x["bubbles"], ts(x["last"]),
+                   "  (archived)" if x["archived"] else ""))
+        print()
+    print("add one to an account with:  ferry-cli.py cursor-import <id|text> <account>")
+
+def cmd_cursor_import(query, who):
+    chats = [x for x in cursor_chats()
+             if x["id"].startswith(query) or query.lower() in x["title"].lower()]
+    if not chats: return print(f"no Cursor chat matching {query!r}")
+    if len(chats) > 1:
+        print("matches more than one chat:")
+        for x in chats: print("   %-9s %s" % (x["id"][:8], x["title"][:58]))
+        return
+    chat = chats[0]
+    st = scan()
+    w = who.lower()
+    accounts = [s for s in st["scopes"] if s.get("kind") != "source"]
+    want = [s for s in accounts
+            if w in ((s["profile"] or {}).get("email", "") or "").lower()
+            or w in (s["label"] or "").lower() or s["acct"].lower().startswith(w)]
+    if len(want) != 1:
+        print("no single account matching %r. Accounts here:" % who)
+        for s in accounts:
+            print("   %-9s %s" % (s["acct"][:8], (s["profile"] or {}).get("email") or s["label"] or "-"))
+        return
+    t = want[0]
+    r = op_cursor_import(chat["id"], t["acct"], t["org"])
+    name = (t["profile"] or {}).get("email") or t["label"] or t["acct"][:8]
+    print(f"{r['title']!r}")
+    print(f"  {r['messages']} turns from Cursor -> {name}")
+    print(f"  folder     : {chat['folder']}")
+    print(f"  transcript : {r['transcript']}")
+    print(f"  record     : {r['wrote']}")
+
 def cmd_ui():
     srv = HTTPServer(("127.0.0.1", PORT), H)
     url = f"http://127.0.0.1:{PORT}/"
@@ -944,5 +1167,9 @@ if __name__ == "__main__":
     elif a=="folder":
         if len(sys.argv) < 4: print("usage: ferry-cli.py folder <text|id> <path>")
         else: cmd_folder(sys.argv[2], sys.argv[3])
+    elif a=="cursor": cmd_cursor()
+    elif a=="cursor-import":
+        if len(sys.argv) < 4: print("usage: ferry-cli.py cursor-import <text|id> <account>")
+        else: cmd_cursor_import(sys.argv[2], sys.argv[3])
     elif a=="ui":    cmd_ui()
     else: print(__doc__)
