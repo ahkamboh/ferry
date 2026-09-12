@@ -347,6 +347,32 @@ fn msg_text(c: &Value) -> String {
     out
 }
 
+/// A chat's name, taken from the first thing the person typed. The desktop app
+/// titles its own chats in a few words, so a whole opening prompt would tower
+/// over them in the list: keep the first sentence, and cut that at a word.
+/// A full stop only ends a sentence when a space follows it, or "github.com"
+/// and "ocid1.tenancy.oc1" would each end one.
+fn title_from(text: &str) -> String {
+    let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let b = one.as_bytes();
+    let mut s = one.as_str();
+    for (i, c) in one.char_indices() {
+        if c == '.' || c == '!' || c == '?' {
+            if i + 1 >= one.len() { break; }     // one sentence: it keeps its mark
+            if b[i + 1] == b' ' {
+                if (12..=70).contains(&i) { s = &one[..i]; }
+                break;
+            }
+        }
+    }
+    if s.chars().count() <= 60 { return s.to_string(); }
+    let cut: String = s.chars().take(60).collect();
+    match cut.rfind(' ') {
+        Some(i) if i >= 30 => format!("{}\u{2026}", &cut[..i]),
+        _ => format!("{}\u{2026}", cut.trim_end()),
+    }
+}
+
 /// First non-empty value wins: a transcript states its cwd and version on every
 /// line, and the earliest line is the one that describes the session.
 fn fill(dst: &mut String, v: Option<&str>) {
@@ -394,12 +420,11 @@ fn read_session(path: &str) -> Option<Value> {
            && !d["isMeta"].as_bool().unwrap_or(false) {
             let text = msg_text(&d["message"]["content"]);
             let t = text.trim();
-            if !t.is_empty() && !t.starts_with('<') {
+            // "[Request interrupted…]" is written by the harness when you stop a
+            // tool, not typed: it is neither a turn nor a name for the chat.
+            if !t.is_empty() && !t.starts_with('<') && !t.starts_with("[Request interrupted") {
                 turns += 1;
-                if title.is_empty() {
-                    title = t.split_whitespace().collect::<Vec<_>>().join(" ")
-                             .chars().take(90).collect();
-                }
+                if title.is_empty() { title = title_from(t); }
             }
         }
     }
@@ -408,6 +433,7 @@ fn read_session(path: &str) -> Option<Value> {
         .map(|d| d.as_millis() as u64).unwrap_or(0);
     if title.is_empty() { title = "(untitled)".into(); }
     Some(json!({
+        "v": INDEX_V,
         "entrypoint": entrypoint, "cwd": cwd, "version": version, "branch": branch,
         "model": model, "title": title, "turns": turns, "size": md.len(),
         "created": iso_ms(&first).unwrap_or(mtime),
@@ -416,6 +442,9 @@ fn read_session(path: &str) -> Option<Value> {
 }
 
 fn index_path() -> String { format!("{}/sessions.json", vault()) }
+/// Bumped whenever what is read out of a transcript changes, so an index
+/// written by an older Ferry is re-read rather than believed.
+const INDEX_V: u64 = 3;
 
 /// Reading every unclaimed transcript on every scan would mean re-reading
 /// hundreds of megabytes to learn nothing new, so what each one said about
@@ -426,7 +455,8 @@ fn session_info(cache: &mut Value, path: &str, dirty: &mut bool) -> Option<Value
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs()).unwrap_or(0);
     if let Some(hit) = cache.get(path) {
-        if hit["size"].as_u64() == Some(md.len()) && hit["mtime"].as_u64() == Some(mtime) {
+        if hit["v"].as_u64() == Some(INDEX_V)
+           && hit["size"].as_u64() == Some(md.len()) && hit["mtime"].as_u64() == Some(mtime) {
             return Some(hit.clone());
         }
     }
