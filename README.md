@@ -45,6 +45,7 @@ Ferry fixes both. It reads the files Claude Code already writes, lets you carry 
 | | |
 |---|---|
 | **See every account** | every Claude account you've signed into on this Mac, with its chats — even ones you're signed out of |
+| **Find CLI and VS Code chats** | sessions you ran with `claude` or in the editor that no account lists at all — read them, and add one to whichever account you like |
 | **Identify them** | email for the account you're signed into; connectors, date range and project folders for the rest. Nickname any account and it sticks |
 | **Read any chat** | full conversation with proper Markdown — tables, code blocks, lists, quotes — plus tool calls |
 | **Copy or move** | drag a chat onto another account, or use the Copy / Move buttons |
@@ -65,6 +66,25 @@ Claude Code stores your history in two separate layers:
 | Subagent transcripts | `~/.claude/projects/<encoded-cwd>/<sessionId>/subagents/*.jsonl` | shared |
 
 Because transcripts are account-agnostic, moving a chat only moves about **10 KB of JSON**. A 45 MB conversation transfers in the same instant as a 40 KB one, and nothing is duplicated on disk.
+
+## Chats no account lists
+
+The same split explains a second kind of missing chat. `claude` in a terminal and the VS Code extension write transcripts into the very same tree — but neither writes the per-account record. **So every chat you started outside the desktop app belongs to no account, and nothing lists it.** It isn't in the app, it isn't in any account, and `claude --resume` only offers it while you're standing in the folder it ran in.
+
+Ferry finds them. Each transcript states which surface wrote it, so they arrive grouped under the accounts, titled by their first message:
+
+```
+NOT IN AN ACCOUNT
+  >_  Claude Code CLI      6 chats · no account yet
+  {}  VS Code              7 chats · no account yet
+```
+
+Open one and it reads like any other chat. **Add to account** then writes the record it never had, and from that moment Claude lists it, and Ferry can copy, move, rename, archive and delete it like the rest. Nothing is written back into the transcript, so the session stays resumable from where it came.
+
+Two details worth knowing:
+
+- The new record's id comes from the session's own id, so importing the same chat twice updates one record instead of making a second.
+- Only the account's environment fields are inherited, copied from a record the app itself wrote there. Connector settings are not, for the same reason they're stripped on copy.
 
 ## Install
 
@@ -129,8 +149,11 @@ python3 ferry-cli.py vault                    # archive everything to ~/.ferry
 python3 ferry-cli.py export "auth refactor"   # save a chat, Markdown by default
 python3 ferry-cli.py export "auth refactor" json
 python3 ferry-cli.py export 1191f0ec txt      # disambiguate by session id
+python3 ferry-cli.py import 17b163e1 work@    # add a CLI chat to an account
 python3 ferry-cli.py ui                       # serve the app UI at localhost:7777
 ```
+
+`list` prints the CLI and VS Code chats under the accounts, with a short id for each. `import` takes that id (or a piece of the title) and an account — its address, its nickname, or the start of its uuid — and gives the chat a record there.
 
 `export` matches on chat title or session id. If a title matches more than one chat it lists
 the candidates with their ids instead of guessing. Files go to the folder you last downloaded
@@ -154,6 +177,7 @@ Run `vault` from a launchd job or cron and your history is backed up nightly wit
   snapshots/                     an automatic copy before each change
   labels.json                    your account nicknames
   prefs.json                     last folder you downloaded to
+  sessions.json                  what each CLI/VS Code transcript says about itself
 ```
 
 The archive is yours, outside anything Claude Code manages. Once a chat is in it, deletion becomes cosmetic — restore it into whichever account you want.
@@ -162,7 +186,7 @@ The archive is yours, outside anything Claude Code manages. Once a chat is in it
 
 - **Writes are refused while the Claude app is running.** Quit Claude first; the title bar tells you when editing is off.
 - **Every change is snapshotted** into `~/.ferry/snapshots/` before it happens.
-- **Transcripts are never moved or edited.** Only the small metadata record moves.
+- **Transcripts are never moved or edited.** Only the small metadata record moves. Importing a CLI or VS Code chat writes one; it never writes back into the transcript, and a chat that has no record yet cannot be renamed, moved or deleted.
 - **Connector settings are stripped on copy.** MCP connector IDs belong to the account that created them and don't resolve elsewhere.
 - **Deleting writes a tombstone**, the same marker Claude Code uses. The conversation stays on disk.
 
@@ -176,6 +200,12 @@ No. The transcripts are still on disk — only the per-account metadata changed.
 
 **Can I recover a deleted Claude Code chat?**
 Usually. Deletion writes a small tombstone rather than erasing the conversation, so if the transcript hasn't been pruned, Ferry can restore it from another account or from `~/.ferry`.
+
+**The Claude app doesn't list the chats I ran in the terminal or in VS Code. Where are they?**
+On disk, in `~/.claude/projects`, same as every other chat. What they don't have is the per-account record the desktop app writes, and that record is the only thing the app lists from. Ferry shows them under **not in an account**; **Add to account** writes that record, and Claude lists the chat from then on.
+
+**Does importing a CLI chat take it away from the CLI?**
+No. Only the small record is written, and the record is new — the transcript is not touched, so `claude --resume` still offers the session in the folder it ran in.
 
 **Why does a chat show a warning dot?**
 Its transcript was pruned by Claude Code's cleanup. The record survives, the conversation doesn't. Backing up prevents this.

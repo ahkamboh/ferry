@@ -56,6 +56,13 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 .acct:hover{background:var(--panel)}
 .acct.on{background:var(--panel);border-color:var(--line);box-shadow:var(--sh)}
 .acct.drop{border:1px dashed var(--accent);background:var(--panel)}
+/* A source is where chats come from, not an account one can be sent to, so it
+   is never a drop target and wears a mark rather than a coloured badge. */
+.av.src{background:var(--line);color:var(--dim);font-size:11px;letter-spacing:-.05em;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.srcn{display:inline-block;padding:1px 6px;border-radius:6px;border:1px solid var(--line);
+ background:var(--raise);color:var(--dim);font-size:10px;font-weight:600;margin-left:6px;
+ vertical-align:1px;letter-spacing:.01em}
 .av{width:26px;height:26px;border-radius:8px;flex:none;display:grid;place-items:center;
  font-size:10.5px;font-weight:700;color:#fff;letter-spacing:.02em}
 .acct .who{font-size:12.5px;font-weight:560;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -365,28 +372,34 @@ const LOOK=[{look:1},{look:1},{look:1}],TRIP=[],CHEER=Array(7).fill(HAPPY);
 for(let i=0;i<=11;i++)TRIP.push({look:1,cargo:i/11});
 async function transfer(path,t,mv){
   if(busyOn)return;busyOn=true;
-  const a=$("#ask"),ok=(mv?"Moved to ":"Copied to ")+short(t);
-  let err=null,landed=false;
+  const imp=(mv==="import");
+  const a=$("#ask"),ok=(imp?"Added to ":mv?"Moved to ":"Copied to ")+short(t);
+  let err=null,landed=false,res=null;
   try{
     if(!a.className)ask(path,t,mv);                              // it always runs in the card
     if(!a.className)return;
     a.onclick=null;                                              // no cancelling mid-trip
-    $("#askh").textContent=mv?"Moving this chat…":"Copying this chat…";
+    $("#askh").textContent=imp?"Adding this chat…":mv?"Moving this chat…":"Copying this chat…";
     a.querySelectorAll(".askc p").forEach(x=>x.remove());
-    a.querySelector(".askb").outerHTML='<p class=stat id=astat>'+esc((mv?"Moving to ":"Copying to ")+short(t))+'…</p>';
+    a.querySelector(".askb").outerHTML='<p class=stat id=astat>'+
+      esc((imp?"Adding to ":mv?"Moving to ":"Copying to ")+short(t))+'…</p>';
     const m=a.querySelector(".route .mascot");m.classList.add("own");   // the idle loop lets go of it
     const play=fs=>new Promise(z=>{let i=0;(function f(){
       if(i>=fs.length||err)return z();m.innerHTML=drawMascot(fs[i++]);setTimeout(f,110);})();});
-    const work=iv("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv})
-      .then(()=>{},e=>{err=String(e);}).finally(()=>{landed=true;});
+    const work=(imp?iv("import_session",{path:path,acct:t.acct,org:t.org})
+                   :iv("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv}))
+      .then(r=>{res=r;},e=>{err=String(e);}).finally(()=>{landed=true;});
     if(still)await work;
     else{await play(LOOK);do{await play(TRIP);}while(!landed&&!err);}
     await work;
     if(err)return toast(err,true);
-    $("#askh").textContent=mv?"Chat moved":"Chat copied";          // the title says it; the status line
-    $("#astat").style.visibility="hidden";                           // steps aside, keeping its space
+    $("#askh").textContent=imp?"Chat added":mv?"Chat moved":"Chat copied";   // the title says it; the status
+    $("#astat").style.visibility="hidden";                           // line steps aside, keeping its space
     $("#tfrom").classList.remove("hl");$("#tto").classList.add("hl");   // the ring follows the chat
-    if(mv)$("#tfrom").classList.add("out");
+    if(mv===true)$("#tfrom").classList.add("out");
+    // an imported chat now lives in the account: follow it there, so the lists
+    // behind the card do not close on a chat that has just left the sources
+    if(imp&&res&&res.wrote){scopeKey=key(t);chatPath=res.wrote;}
     await Promise.all([                            // cheer while the lists redraw behind the card
       still?(m.innerHTML=drawMascot(HAPPY),new Promise(z=>setTimeout(z,700))):play(CHEER),
       (async()=>{await load();
@@ -465,11 +478,27 @@ function chatAt(p){for(const s of S.scopes)for(const c of s.chats)if(c.path===p)
 // The card names an account by the part before the @; hovering shows the rest.
 // An account is named by its nickname, else its Claude display name, else the
 // part of its address before the @; hovering shows everything known about it.
-const short=s=>s.label||(s.profile&&s.profile.name)||label(s).split("@")[0];
-const whoTip=s=>[s.label,s.profile&&s.profile.name,s.profile&&s.profile.email]
+/* A source is not an account. The CLI and the VS Code extension write a
+   transcript for every session but no per-account record, so those chats sit on
+   disk owned by nobody. Ferry lists them so they can be imported into an
+   account; nothing is ever written back into a source. */
+const isSrc=s=>!!(s&&s.kind==="source");
+const accts=()=>S.scopes.filter(s=>!isSrc(s));
+const srcs=()=>S.scopes.filter(isSrc);
+const SRCAV={cli:">_",vscode:"{}",desktop:"[]",other:"··"};
+const SRCTIP={cli:"Chats you started with the claude command",
+              vscode:"Chats you started in the VS Code extension",
+              desktop:"Desktop sessions no account has a record for",
+              other:"Sessions no account has a record for"};
+const short=s=>isSrc(s)?s.sourceName
+  :(s.label||(s.profile&&s.profile.name)||label(s).split("@")[0]);
+const whoTip=s=>isSrc(s)
+  ?[s.sourceName,SRCTIP[s.source]||"","Not in any account yet"].filter(Boolean).join("\n")
+  :[s.label,s.profile&&s.profile.name,s.profile&&s.profile.email]
   .filter((x,i,a)=>x&&a.indexOf(x)===i).concat("Account "+s.acct.slice(0,8)+(s.isCurrent?" · signed in now":"")).join("\n");
-const avatar=s=>'<span class=av style="background:hsl('+hue(s.acct)+' 42% 48%)">'+
-  esc(((s.profile&&s.profile.name)||label(s)).slice(0,2).toUpperCase())+'</span>';
+const avatar=s=>'<span class="av'+(isSrc(s)?' src':'')+'"'+
+  (isSrc(s)?'':' style="background:hsl('+hue(s.acct)+' 42% 48%)"')+'>'+
+  esc(isSrc(s)?(SRCAV[s.source]||"··"):((s.profile&&s.profile.name)||label(s)).slice(0,2).toUpperCase())+'</span>';
 function who(s,id){
   return '<span class=who id='+id+' title="'+esc(whoTip(s))+'">'+avatar(s)+'<span>'+esc(short(s))+'</span></span>';}
 
@@ -495,6 +524,21 @@ function sendGroup(others){
       '<button'+(sendMv?' class=on':'')+' onclick=flip(true) title="Move it to '+to+
         '. You can restore it here from the deleted list.">Move</button></span></span>';
 }
+/* The same row for a chat no account owns. There is nothing to move out of and
+   nothing to leave behind, so it offers one action: give it a record in an
+   account. The transcript is not touched. */
+function importGroup(others){
+  if(!others.length)return '<span class=nosend>Sign in to an account in Claude to add this chat to it.</span>';
+  if(!others.some(x=>key(x)===tgtKey))tgtKey=key(others[0]);
+  const t=others.find(x=>key(x)===tgtKey),to=esc(short(t));
+  return '<span class=sendg><span class=cap>Add to</span>'+
+    '<button class=pick id=pick onclick="pickMenu(event)" title="'+esc(whoTip(t))+
+      '" aria-haspopup=listbox aria-expanded=false>'+avatar(t)+'<span>'+to+'</span>'+CHEVRON+'</button>'+
+    '<span class=sep></span>'+
+    '<button class="btn p" onclick=btnImport() title="Give this chat a record in '+to+
+      ', so Claude lists it there. The conversation itself stays where it is.">Add to account</button></span>';
+}
+function btnImport(){const t=accts().find(x=>key(x)===tgtKey);if(t)ask(chatPath,t,"import");}
 function flip(mv){sendMv=mv;const s=$(".seg");s.dataset.v=mv?"move":"copy";
   s.querySelectorAll("button").forEach((b,i)=>b.classList.toggle("on",i===(mv?1:0)));
   setTimeout(()=>btnSend(mv),160);}              // let the switch land, then the card
@@ -503,7 +547,7 @@ function pickMenu(e){e.stopPropagation();
   if(m.className){m.className="";p.setAttribute("aria-expanded","false");return;}
   p.setAttribute("aria-expanded","true");
   const b=p.getBoundingClientRect();
-  m.innerHTML=S.scopes.filter(x=>key(x)!==scopeKey).map(x=>
+  m.innerHTML=accts().filter(x=>key(x)!==scopeKey).map(x=>
     '<button class=mi role=menuitem data-k="'+esc(key(x))+'" title="'+esc(whoTip(x))+'">'+avatar(x)+
     '<span>'+esc(short(x))+'</span>'+(x.isCurrent?'<em>signed in</em>':'')+
     (key(x)===tgtKey?'<b>✓</b>':'')+'</button>').join("");
@@ -515,19 +559,24 @@ function pickMenu(e){e.stopPropagation();
 // itself chose only the destination. Either way it says what will happen.
 function ask(p,t,mv){
   const [s,c]=chatAt(p);if(!s||!t)return;
+  const imp=(mv==="import");                                   // it belongs to nobody yet
   const from=esc(short(s)),to=esc(short(t)),a=$("#ask");
   const btn=(id,txt,pri)=>'<button class="btn'+(pri?' p':'')+'" id='+id+'>'+txt+'</button>';
   a.innerHTML='<div class=askc role=dialog aria-modal=true aria-labelledby=askh>'+
-    '<h3 id=askh>'+(mv===null?'Send this chat to '+to:mv?'Move this chat?':'Copy this chat?')+'</h3>'+
+    '<h3 id=askh>'+(imp?'Add this chat to '+to+'?'
+                   :mv===null?'Send this chat to '+to:mv?'Move this chat?':'Copy this chat?')+'</h3>'+
     '<div class=ct>'+esc(c.title)+'</div>'+
     '<div class=route>'+who(s,"tfrom")+mascot()+who(t,"tto")+'</div>'+   // the trip it is about to make
-    (mv===null?'<p><b>Copy</b> keeps it in '+from+' as well. <b>Move</b> takes it out of '+from+
+    (imp?'<p>'+to+' gets a record for it, so Claude lists it there like any other chat. '+
+        'The conversation stays where it is on disk, and the session stays resumable from the '+from+'.</p>'
+     :mv===null?'<p><b>Copy</b> keeps it in '+from+' as well. <b>Move</b> takes it out of '+from+
         ', and you can restore it from the deleted list.</p>'
      :mv?'<p>It moves to '+to+' and leaves '+from+', where you can restore it from the deleted list.</p>'
      :'<p>It is added to '+to+' and stays in '+from+'.</p>')+
     (S.appRunning?'<p class=warn>Claude is open, so Ferry can\'t write yet. Quit Claude, then confirm.</p>':'')+
     '<div class=askb>'+btn("an","Cancel")+
-      (mv===null?btn("am","Move")+btn("ac","Copy",1):btn("ago",mv?"Move":"Copy",1))+'</div></div>';
+      (imp?btn("ago","Add to "+to,1)
+       :mv===null?btn("am","Move")+btn("ac","Copy",1):btn("ago",mv?"Move":"Copy",1))+'</div></div>';
   a.className="on";wake();
   $("#tfrom").classList.add("hl");                             // the chat starts here
   $("#an").onclick=closeAsk;
@@ -645,30 +694,39 @@ function diagPanel(){
 }
 
 function drawSide(){
-  const s0=scope();
-  $("#side").innerHTML='<div class=secl>accounts</div>'+S.scopes.map(s=>{
-    const nm=RICH?short(s):label(s),ini=((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
-    const em=RICH&&s.profile&&s.profile.email;                    // Windows: name, then address
-    return '<div class="acct '+(key(s)===scopeKey?'on':'')+'" data-k="'+key(s)+'" onclick="pick(\''+key(s)+'\')"'+
+  const s0=scope(),A=accts(),R=srcs();
+  const row=s=>{
+    const nm=RICH?short(s):label(s);
+    const ini=isSrc(s)?(SRCAV[s.source]||"··"):((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
+    const em=!isSrc(s)&&RICH&&s.profile&&s.profile.email;          // Windows: name, then address
+    const mt=isSrc(s)?s.chats.length+' chat'+(s.chats.length===1?'':'s')+' · no account yet'
+      :s.chats.length+' chats'+(s.deleted.length?' · '+s.deleted.length+' deleted':'');
+    return '<div class="acct '+(isSrc(s)?'src ':'')+(key(s)===scopeKey?'on':'')+'" data-k="'+key(s)+'" onclick="pick(\''+key(s)+'\')"'+
         (RICH?' title="'+esc(whoTip(s))+'"':'')+'>'+
-      '<div class=av style="background:hsl('+hue(s.acct)+' 42% 48%)">'+esc(ini)+'</div>'+
+      '<div class="av'+(isSrc(s)?' src':'')+'"'+(isSrc(s)?'':' style="background:hsl('+hue(s.acct)+' 42% 48%)"')+'>'+esc(ini)+'</div>'+
       '<div class=bd><div class=who>'+(s.isCurrent?'<span class=dotc></span>':'')+esc(nm)+'</div>'+
       (em?'<div class=em>'+esc(em)+'</div>':'')+
-      '<div class=mt>'+s.chats.length+' chats'+(s.deleted.length?' · '+s.deleted.length+' deleted':'')+'</div>'+
-      '</div></div>';}).join("")
-   +(s0?'<div class=secl>rename</div><div style="padding:0 9px"><input id=nick placeholder="name this account" value="'+
+      '<div class=mt>'+mt+'</div>'+
+      '</div></div>';};
+  $("#side").innerHTML='<div class=secl>accounts</div>'+A.map(row).join("")
+   // Sessions Claude Code wrote outside the desktop app. They are listed under
+   // the accounts because that is where they are heading, not beside them.
+   +(R.length?'<div class=secl title="Chats Claude Code wrote outside the desktop app. Open one and add it to an account.">not in an account</div>'+R.map(row).join(""):"")
+   +(s0&&!isSrc(s0)?'<div class=secl>rename</div><div style="padding:0 9px"><input id=nick placeholder="name this account" value="'+
       esc(s0.label||'')+'" onchange="setLabel(\''+s0.acct+'\',this.value)"></div>':'')
-   +'<div class=foot title="'+esc('sessions: '+((S.paths||{}).sessions||'?')+String.fromCharCode(10)+'projects: '+((S.paths||{}).projects||'?'))+'">'+S.scopes.length+' accounts · '+
-      S.scopes.reduce((a,x)=>a+x.chats.length,0)+' chats · '+
-      S.scopes.reduce((a,x)=>a+x.deleted.length,0)+' deleted</div>';
-  document.querySelectorAll(".acct").forEach(el=>{
+   +'<div class=foot title="'+esc('sessions: '+((S.paths||{}).sessions||'?')+String.fromCharCode(10)+'projects: '+((S.paths||{}).projects||'?'))+'">'+A.length+' accounts · '+
+      A.reduce((a,x)=>a+x.chats.length,0)+' chats · '+
+      A.reduce((a,x)=>a+x.deleted.length,0)+' deleted'+
+      (R.length?'<br>'+R.reduce((a,x)=>a+x.chats.length,0)+' from the CLI and VS Code':'')+'</div>';
+  // a source is never a drop target: there is no record there to write
+  document.querySelectorAll(".acct:not(.src)").forEach(el=>{
     el.ondragover=e=>{if(dragged&&el.dataset.k!==scopeKey){e.preventDefault();el.classList.add("drop");}};
     el.ondragleave=()=>el.classList.remove("drop");
     el.ondrop=e=>{e.preventDefault();el.classList.remove("drop");askDrop(e,el.dataset.k);};});
   // Windows: accept dragenter as well as dragover - a strict drop target needs
   // both, or the pointer over an account's name or avatar shows "no drop" -
   // and only clear the highlight when the pointer really leaves the account.
-  if(RICH)document.querySelectorAll(".acct").forEach(el=>{
+  if(RICH)document.querySelectorAll(".acct:not(.src)").forEach(el=>{
     const ok=()=>dragged&&el.dataset.k!==scopeKey;
     el.ondragenter=e=>{if(ok()){e.preventDefault();el.classList.add("drop");}};
     el.ondragover=e=>{if(ok()){e.preventDefault();e.dataTransfer.dropEffect="copy";el.classList.add("drop");}};
@@ -682,7 +740,10 @@ function drawList(){
   const L=s.chats.filter(c=>!q||c.title.toLowerCase().includes(q));
   $("#list").innerHTML='<input id=q placeholder="Search '+s.chats.length+' chats" value="'+esc(q)+'">'
    +(L.length?L.map(c=>'<div class="ch '+(chatPath===c.path?'on':'')+'" draggable=true data-p="'+esc(c.path)+
-      '" onclick="openChat(this.dataset.p)">'+(c.missing?'<span class=warnd title="transcript pruned"></span>':'')+
+      '" onclick="openChat(this.dataset.p)"'+
+      // a CLI chat is known by the folder it ran in, so say which one
+      (c.source&&c.cwd?' title="'+esc(c.cwd)+'"':'')+'>'+
+      (c.missing?'<span class=warnd title="transcript pruned"></span>':'')+
       '<span class=t>'+esc(c.title)+'</span><span class=n>'+(c.turns||0)+'</span></div>').join("")
      :'<div class=empty style="padding:40px 10px">No match</div>')
    +(s.deleted.length?'<div class=secl>deleted</div>'+s.deleted.map(d=>'<div class="ch dead">'+
@@ -701,6 +762,8 @@ function drawList(){
 function askDrop(e,k){
   const p=dragged;if(!p)return;
   const t=S.scopes.find(s=>key(s)===k),d=$("#drop");
+  const [s0]=chatAt(p);
+  if(isSrc(s0))return ask(p,t,"import");     // nowhere to move it out of: it can only be added
   if(RICH)return ask(p,t,null);                                  // Windows: the choice is made on the card
   d.style.left=Math.min(e.clientX,innerWidth-200)+"px";
   d.style.top=Math.min(e.clientY,innerHeight-56)+"px";
@@ -723,18 +786,22 @@ async function openChat(p){chatPath=p;drawList();
 function drawRead(d){
   if(!d){$("#read").innerHTML='<div class=empty>Select a conversation.<br>'+
     'Drag one onto an account in the sidebar to copy or move it.</div>';return;}
-  const r=d.rec,others=S.scopes.filter(x=>key(x)!==scopeKey);curD=d;
+  // a chat no account owns yet: nothing to rename, nothing to delete it from,
+  // and the row below offers to add it to an account rather than to send it on
+  const r=d.rec,src=isSrc(scope()),others=accts().filter(x=>key(x)!==scopeKey);curD=d;
   const meta=esc((r.model||"").replace("claude-",""))+' · '+(r.completedTurns||0)+
        ' turns · '+day(r.createdAt)+' → '+day(r.lastActivityAt)+' · '+d.files.length+
-       ' transcripts · '+fmt(d.bytes)+(d.subs?' · '+d.subs+' subagent':'');
-  const ttl='<input id=ttl value="'+esc(r.title)+'" onchange=doRename()'+(RICH?' title="'+meta+'"':'')+'>';
+       ' transcripts · '+fmt(d.bytes)+(d.subs?' · '+d.subs+' subagent':'')+
+       (src&&r.cwd?' · '+esc(r.cwd):'');
+  const ttl='<input id=ttl value="'+esc(r.title)+'"'+
+       (src?' readonly title="'+meta+'"':' onchange=doRename()'+(RICH?' title="'+meta+'"':''))+'>';
   const fileops=
        '<select id=fmt title="File format for the download">'+
          '<option value=md>Markdown</option><option value=txt>Plain text</option>'+
          '<option value=json>JSON</option></select>'+
        '<button class=btn onclick=doExport() title="Choose where to save the whole conversation. Currently defaults to '+
          esc((S.exportDir||"~/Downloads").replace(/^\/Users\/[^\/]+/,"~"))+'">Download</button>'+
-       '<button class="btn d" onclick=doDelete()>Delete</button>';
+       (src?'':'<button class="btn d" onclick=doDelete()>Delete</button>');
   $("#read").innerHTML=
    '<div id=rhead'+(RICH?' class=x':'')+'>'+
      (RICH?'<button class=xbtn onclick=closeChat() title="Close chat (Ctrl+W)" aria-label="Close chat">'+
@@ -743,10 +810,10 @@ function drawRead(d){
        // Windows: the file actions share the title's row (the details live in its
        // tooltip), and the row below is only about sending the chat
        '<div class=trow>'+ttl+'<span class="tools fops">'+fileops+'</span></div>'+
-       '<div class=tools>'+sendGroup(others)+'</div>'
+       '<div class=tools>'+(src?importGroup(others):sendGroup(others))+'</div>'
      :ttl+'<div class=meta>'+meta+'</div>'+
        '<div class=tools>'+
-       (others.length?'<select id=tgt>'+others.map(x=>'<option value="'+key(x)+'">'+esc(label(x))+'</option>').join("")+
+       (others.length&&!src?'<select id=tgt>'+others.map(x=>'<option value="'+key(x)+'">'+esc(label(x))+'</option>').join("")+
         '</select><button class="btn p" onclick=btnSend(false)>Copy →</button>'+
         '<button class=btn onclick=btnSend(true)>Move →</button>':'')+
        '<span style="flex:1"></span>'+fileops+'</div>')+

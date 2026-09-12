@@ -3,6 +3,7 @@
 
 use serde_json::{json, Value};
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -105,6 +106,14 @@ fn project_dir(cwd: &str) -> String {
     for cand in [&current, &enc_cwd_legacy(cwd)] {
         let d = format!("{}/{}", root, cand);
         if Path::new(&d).is_dir() { return d; }
+    }
+    // A drive letter is written either way ("C--Drive-x", "c--Drive-x"), so on a
+    // case-sensitive volume the exact name can miss a folder that is really there.
+    if let Ok(rd) = fs::read_dir(&root) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.eq_ignore_ascii_case(&current) { return format!("{}/{}", root, name); }
+        }
     }
     // truncated long path: "<prefix>-<base36 hash>"
     if let Ok(rd) = fs::read_dir(&root) {
@@ -280,6 +289,224 @@ fn transcripts_for(rec: &Value) -> Vec<Value> {
     }).collect()
 }
 
+/* ---------- sessions no account claims ----------
+   Claude Code writes a transcript for every session it runs, wherever it runs:
+   the CLI, the VS Code extension and the desktop app all append to the same
+   ~/.claude/projects tree. Only the desktop app also writes the small
+   per-account record Ferry lists, so a chat started in the CLI or in VS Code is
+   on disk and belongs to nobody - readable, but invisible to every account.
+   These are listed as read-only sources. A chat can be imported out of one into
+   an account; nothing is ever written back into them. */
+
+/// The surface that wrote a transcript, as the file itself reports it.
+fn source_of(entrypoint: &str) -> (&'static str, &'static str) {
+    match entrypoint {
+        "cli"            => ("cli",     "Claude Code CLI"),
+        "claude-vscode"  => ("vscode",  "VS Code"),
+        "claude-desktop" => ("desktop", "Desktop, no record"),
+        _                => ("other",   "Other sessions"),
+    }
+}
+
+/// Days since 1970-01-01 for a civil date. Hinnant's algorithm, so that reading
+/// a timestamp costs no dependency.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// "2026-09-12T08:44:01.123Z" to epoch milliseconds. Transcripts date every line
+/// this way; chat records count in milliseconds, so one has to become the other.
+fn iso_ms(s: &str) -> Option<u64> {
+    if s.len() < 19 { return None; }
+    let num = |a: usize, z: usize| s.get(a..z).and_then(|x| x.parse::<i64>().ok());
+    let (y, mo, d)  = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (h, mi, se) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    let ms = if s.len() >= 23 && s.as_bytes()[19] == b'.' { num(20, 23).unwrap_or(0) } else { 0 };
+    let t = (days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se) * 1000 + ms;
+    if t < 0 { None } else { Some(t as u64) }
+}
+
+/// The readable text of one message, whether it came as a string or as parts.
+fn msg_text(c: &Value) -> String {
+    if let Some(s) = c.as_str() { return s.to_string(); }
+    let Some(arr) = c.as_array() else { return String::new() };
+    let mut out = String::new();
+    for part in arr {
+        if part["type"].as_str() == Some("text") {
+            if let Some(x) = part["text"].as_str() {
+                if !out.is_empty() { out.push(' '); }
+                out.push_str(x);
+            }
+        }
+    }
+    out
+}
+
+/// First non-empty value wins: a transcript states its cwd and version on every
+/// line, and the earliest line is the one that describes the session.
+fn fill(dst: &mut String, v: Option<&str>) {
+    if dst.is_empty() {
+        if let Some(x) = v { if !x.is_empty() { *dst = x.to_string(); } }
+    }
+}
+
+/// Everything a transcript says about itself, in one pass: which surface wrote
+/// it, where it ran, when it started and stopped, how many turns it took, and
+/// what to call it. Lines over a megabyte are tool output, never metadata, so
+/// they are skipped without parsing - that keeps a 90 MB transcript cheap to
+/// read and bounds the memory reading it takes.
+fn read_session(path: &str) -> Option<Value> {
+    let md = fs::metadata(path).ok()?;
+    let f = fs::File::open(path).ok()?;
+    let mut rd = BufReader::with_capacity(1 << 16, f);
+    let mut buf: Vec<u8> = Vec::new();
+    let (mut entrypoint, mut cwd, mut version, mut branch, mut model) =
+        (String::new(), String::new(), String::new(), String::new(), String::new());
+    let (mut title, mut first, mut last) = (String::new(), String::new(), String::new());
+    let mut turns = 0u64;
+
+    loop {
+        buf.clear();
+        match rd.read_until(b'\n', &mut buf) { Ok(0) => break, Ok(_) => {}, Err(_) => break }
+        if buf.len() > (1 << 20) { buf = Vec::new(); continue; }   // give the memory back
+        let Ok(d) = serde_json::from_slice::<Value>(&buf) else { continue };
+        let ty = d["type"].as_str().unwrap_or("");
+        if ty != "user" && ty != "assistant" { continue; }
+
+        fill(&mut entrypoint, d["entrypoint"].as_str());
+        fill(&mut cwd, d["cwd"].as_str());
+        fill(&mut version, d["version"].as_str());
+        fill(&mut branch, d["gitBranch"].as_str());
+        if ty == "assistant" { fill(&mut model, d["message"]["model"].as_str()); }
+        if let Some(t) = d["timestamp"].as_str() {
+            if first.is_empty() { first = t.to_string(); }
+            if t > last.as_str() { last = t.to_string(); }   // ISO-8601 sorts as time
+        }
+        // A turn is a prompt the person typed: not a subagent's, and not the
+        // harness's own <command-name> and <system-reminder> scaffolding.
+        if ty == "user"
+           && !d["isSidechain"].as_bool().unwrap_or(false)
+           && !d["isMeta"].as_bool().unwrap_or(false) {
+            let text = msg_text(&d["message"]["content"]);
+            let t = text.trim();
+            if !t.is_empty() && !t.starts_with('<') {
+                turns += 1;
+                if title.is_empty() {
+                    title = t.split_whitespace().collect::<Vec<_>>().join(" ")
+                             .chars().take(90).collect();
+                }
+            }
+        }
+    }
+    let mtime = md.modified().ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64).unwrap_or(0);
+    if title.is_empty() { title = "(untitled)".into(); }
+    Some(json!({
+        "entrypoint": entrypoint, "cwd": cwd, "version": version, "branch": branch,
+        "model": model, "title": title, "turns": turns, "size": md.len(),
+        "created": iso_ms(&first).unwrap_or(mtime),
+        "last": iso_ms(&last).unwrap_or(mtime),
+    }))
+}
+
+fn index_path() -> String { format!("{}/sessions.json", vault()) }
+
+/// Reading every unclaimed transcript on every scan would mean re-reading
+/// hundreds of megabytes to learn nothing new, so what each one said about
+/// itself is kept in the vault and re-read only when the file changes.
+fn session_info(cache: &mut Value, path: &str, dirty: &mut bool) -> Option<Value> {
+    let md = fs::metadata(path).ok()?;
+    let mtime = md.modified().ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs()).unwrap_or(0);
+    if let Some(hit) = cache.get(path) {
+        if hit["size"].as_u64() == Some(md.len()) && hit["mtime"].as_u64() == Some(mtime) {
+            return Some(hit.clone());
+        }
+    }
+    let mut info = read_session(path)?;
+    info["mtime"] = json!(mtime);
+    cache[path] = info.clone();
+    *dirty = true;
+    Some(info)
+}
+
+/// How many subagent transcripts one session left behind, and how big they are.
+fn subagents_of(dir: &str, id: &str) -> (u64, u64) {
+    let (mut n, mut bytes) = (0u64, 0u64);
+    if let Ok(g) = glob::glob(&format!("{}/{}/subagents/*.jsonl", dir, id)) {
+        for p in g.flatten() {
+            n += 1;
+            bytes += fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+        }
+    }
+    (n, bytes)
+}
+
+/// Every transcript no account's record claims, grouped by the surface that
+/// wrote it and shaped like an account scope so the rest of the app can list it.
+fn source_scopes(claimed: &std::collections::HashSet<String>) -> Vec<Value> {
+    let mut cache = read_json(&index_path()).filter(|v| v.is_object()).unwrap_or_else(|| json!({}));
+    let mut dirty = false;
+    let mut groups: std::collections::BTreeMap<String, Vec<Value>> = Default::default();
+    let mut names: std::collections::BTreeMap<String, &'static str> = Default::default();
+    let mut live: std::collections::HashSet<String> = Default::default();
+
+    if let Ok(paths) = glob::glob(&format!("{}/*/*.jsonl", proj())) {
+        for p in paths.flatten() {
+            let path = p.to_string_lossy().to_string();
+            let Some(id) = p.file_stem().map(|s| s.to_string_lossy().to_string()) else { continue };
+            live.insert(path.clone());
+            if claimed.contains(&id) { continue; }
+            let Some(info) = session_info(&mut cache, &path, &mut dirty) else { continue };
+            let dir = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+            let (subs, sub_bytes) = subagents_of(&dir, &id);
+            let (kind, name) = source_of(info["entrypoint"].as_str().unwrap_or(""));
+            names.insert(kind.to_string(), name);
+            groups.entry(kind.to_string()).or_default().push(json!({
+                "id": format!("local_{}", id), "sid": id,
+                "title": info["title"], "cwd": info["cwd"], "model": info["model"],
+                "created": info["created"], "last": info["last"], "turns": info["turns"],
+                "archived": false, "forkedFrom": Value::Null,
+                "files": 1, "subs": subs,
+                "bytes": info["size"].as_u64().unwrap_or(0) + sub_bytes,
+                "missing": 0, "absent": 0,
+                "branch": info["branch"], "version": info["version"],
+                "source": kind, "path": path
+            }));
+        }
+    }
+    // Forget transcripts retention has since pruned, so the index does not grow
+    // forever on a machine that churns through sessions.
+    if let Some(o) = cache.as_object_mut() {
+        let stale: Vec<String> = o.keys().filter(|k| !live.contains(*k)).cloned().collect();
+        if !stale.is_empty() { dirty = true; for k in stale { o.remove(&k); } }
+    }
+    if dirty {
+        let _ = fs::create_dir_all(vault());
+        let _ = fs::write(index_path(), serde_json::to_string(&cache).unwrap());
+    }
+
+    let mut out: Vec<Value> = groups.into_iter().map(|(kind, mut chats)| {
+        chats.sort_by_key(|c| std::cmp::Reverse(c["last"].as_u64().unwrap_or(0)));
+        json!({
+            "acct": format!("source:{}", kind), "org": "source", "kind": "source",
+            "source": kind, "sourceName": names.get(&kind).copied().unwrap_or("Sessions"),
+            "chats": chats, "deleted": [], "connectors": {},
+            "isCurrent": false, "label": "", "profile": Value::Null
+        })
+    }).collect();
+    out.sort_by_key(|s| std::cmp::Reverse(
+        s["chats"].as_array().unwrap().iter().map(|c| c["last"].as_u64().unwrap_or(0)).max().unwrap_or(0)));
+    out
+}
+
 /// Every <account>/<org> scope under the sessions root, found by walking the
 /// directory rather than by pattern matching. Returns (account, org, dir).
 fn scopes_on_disk() -> Vec<(String, String, PathBuf)> {
@@ -361,6 +588,8 @@ fn scan() -> Value {
     let labs = labels();
     let profs = profiles();
     let mut scopes: std::collections::BTreeMap<String, Value> = Default::default();
+    // every transcript some account already answers for; the rest are sources
+    let mut claimed: std::collections::HashSet<String> = Default::default();
 
     let touch = |scopes: &mut std::collections::BTreeMap<String, Value>, acct: &str, org: &str| {
         scopes.entry(format!("{}|{}", acct, org)).or_insert_with(|| json!({
@@ -382,6 +611,7 @@ fn scan() -> Value {
             touch(&mut scopes, &acct, &org);
             let key = format!("{}|{}", acct, org);
             let tr = transcripts_for(&rec);
+            for t in &tr { if let Some(i) = t["id"].as_str() { claimed.insert(i.to_string()); } }
             let bytes: u64 = tr.iter().map(|t| t["size"].as_u64().unwrap_or(0) + t["subBytes"].as_u64().unwrap_or(0)).sum();
             // Only warn when the chat's OWN transcript is gone. bridgeSessionIds can
             // name sessions that never had a transcript file of their own, and those
@@ -439,6 +669,9 @@ fn scan() -> Value {
     }
     list.sort_by_key(|s| std::cmp::Reverse(
         s["chats"].as_array().unwrap().iter().map(|c| c["last"].as_u64().unwrap_or(0)).max().unwrap_or(0)));
+    // CLI and VS Code sessions come after the accounts: they are where chats are
+    // imported from, not an account you can send one to.
+    list.extend(source_scopes(&claimed));
     json!({ "scopes": list, "current": cur, "appRunning": app_running(),
             "vault": vault(), "exportDir": last_export_dir(),
             "paths": { "sessions": sess(), "projects": proj(), "home": home() },
@@ -496,14 +729,45 @@ fn collect_msgs(tr: &[Value], cap: usize, per_msg: usize) -> Vec<Value> {
     msgs
 }
 
+/// A CLI or VS Code session read straight from its transcript. There is no
+/// record to read, so one is described from the file itself - the same shape
+/// the reader already knows, minus an account to have written it.
+fn source_parts(path: &str) -> Result<(Value, Vec<Value>), String> {
+    let info = read_session(path).ok_or("transcript unreadable")?;
+    let p = Path::new(path);
+    let id  = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let dir = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+    let (subs, sub_bytes) = subagents_of(&dir, &id);
+    let tr = vec![json!({ "id": id, "path": path, "exists": true,
+                          "size": info["size"], "subagents": subs, "subBytes": sub_bytes })];
+    let (kind, name) = source_of(info["entrypoint"].as_str().unwrap_or(""));
+    let rec = json!({
+        "sessionId": Value::Null, "cliSessionId": id,
+        "title": info["title"], "cwd": info["cwd"], "model": info["model"],
+        "createdAt": info["created"], "lastActivityAt": info["last"],
+        "completedTurns": info["turns"], "isArchived": false,
+        "gitBranch": info["branch"], "cliVersion": info["version"],
+        "source": kind, "sourceName": name,
+    });
+    Ok((rec, tr))
+}
+
+/// The record and transcripts of a chat, whether an account owns it or it is
+/// still only a session on disk.
+fn chat_parts(path: &str) -> Result<(Value, Vec<Value>), String> {
+    if under(&proj(), path) && path.ends_with(".jsonl") { return source_parts(path); }
+    if !under(&sess(), path) {
+        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
+    }
+    let rec = read_json(path).ok_or("chat unreadable")?;
+    let tr = transcripts_for(&rec);
+    Ok((rec, tr))
+}
+
 #[cfg_attr(target_os = "windows", tauri::command(async))]
 #[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn chat_detail(path: String) -> Result<Value, String> {
-    if !under(&sess(), &path) {
-        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
-    }
-    let rec = read_json(&path).ok_or("chat unreadable")?;
-    let tr = transcripts_for(&rec);
+    let (rec, tr) = chat_parts(&path)?;
     let msgs = collect_msgs(&tr, 800, 24000);
     let bytes: u64 = tr.iter().map(|t| t["size"].as_u64().unwrap_or(0)).sum();
     let subs: u64 = tr.iter().map(|t| t["subagents"].as_u64().unwrap_or(0)).sum();
@@ -521,17 +785,16 @@ fn slug(s: &str) -> String {
 /// Save the whole conversation to ~/Downloads as Markdown, JSON, or plain text.
 #[tauri::command]
 async fn export_chat(app: tauri::AppHandle, path: String, fmt: String, ask: bool) -> Result<Value, String> {
-    if !under(&sess(), &path) {
-        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
-    }
-    let rec = read_json(&path).ok_or("chat unreadable")?;
-    let tr  = transcripts_for(&rec);
+    let (rec, tr) = chat_parts(&path)?;
     let msgs = collect_msgs(&tr, 100_000, 2_000_000);
     if msgs.is_empty() && fmt != "json" {
         return Err("nothing to download - this chat's transcript was pruned".into());
     }
     let title = rec["title"].as_str().unwrap_or("chat").to_string();
-    let sid   = rec["sessionId"].as_str().unwrap_or("");
+    // a session no account owns has no record id yet: name the file after the
+    // session it does have, so a CLI chat downloads under a stable name too
+    let sid   = rec["sessionId"].as_str()
+                   .or_else(|| rec["cliSessionId"].as_str()).unwrap_or("");
     let short: String = sid.trim_start_matches("local_").chars().take(8).collect();
 
     let (body, ext) = match fmt.as_str() {
@@ -635,6 +898,71 @@ fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<Value,
         let _ = fs::write(format!("{}/deleted_{}", src_dir, short), now_ms().to_string());
     }
     Ok(json!({ "ok": true, "wrote": dst, "moved": mv }))
+}
+
+/// Fields that describe the account and its environment rather than the chat.
+/// An imported record takes them from a record the app itself wrote for that
+/// account, so it never invents a value that does not resolve there.
+const INHERIT: [&str; 6] = ["envScopeId", "permissionMode", "effort",
+                            "chromePermissionMode", "remoteControlAutoEligible",
+                            "classifierSummaryEnabled"];
+
+/// The newest record the app wrote in this account, to copy those fields from.
+fn template_record(dir: &str) -> Option<Value> {
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    for e in fs::read_dir(dir).ok()?.flatten() {
+        let n = e.file_name().to_string_lossy().to_string();
+        if !(n.starts_with("local_") && n.ends_with(".json")) { continue; }
+        let Ok(m) = e.metadata().and_then(|m| m.modified()) else { continue };
+        if best.as_ref().map(|(t, _)| m > *t).unwrap_or(true) { best = Some((m, e.path())); }
+    }
+    read_json(&best?.1.to_string_lossy())
+}
+
+/// Give a CLI or VS Code session the per-account record it never had, so an
+/// account claims it and it becomes an ordinary chat: readable in Claude,
+/// and from here on copyable, movable and deletable like any other.
+/// The transcript is not touched - the session stays resumable from the CLI.
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn import_session(path: String, acct: String, org: String) -> Result<Value, String> {
+    guard()?;
+    if !(under(&proj(), &path) && path.ends_with(".jsonl")) {
+        return Err(format!("path is outside the projects folder\n  path: {}\n  root: {}", path, proj()));
+    }
+    let info = read_session(&path).ok_or("transcript unreadable")?;
+    let cwd = info["cwd"].as_str().unwrap_or("");
+    if cwd.is_empty() { return Err("this transcript does not say which folder it ran in".into()); }
+    let sid = Path::new(&path).file_stem().ok_or("no session id")?.to_string_lossy().to_string();
+    let dst_dir = format!("{}/{}/{}", sess(), acct, org);
+    if !Path::new(&dst_dir).is_dir() { return Err("that account has no folder on this machine".into()); }
+
+    // The id the chat keeps for good, derived from the session it already has:
+    // importing the same session twice updates one record instead of making a
+    // second, and a later copy to another account carries the same id, exactly
+    // as a copy between two accounts does.
+    let id = format!("local_{}", sid);
+    let mut rec = json!({
+        "sessionId": id, "cliSessionId": sid,
+        "cwd": cwd, "originCwd": cwd,
+        "title": info["title"], "titleSource": "auto",
+        "createdAt": info["created"], "lastActivityAt": info["last"],
+        "lastFocusedAt": info["last"], "completedTurns": info["turns"],
+        "isArchived": false,
+    });
+    if let Some(m) = info["model"].as_str() { if !m.is_empty() { rec["model"] = json!(m); } }
+    if let Some(t) = template_record(&dst_dir) {
+        for k in INHERIT { if !t[k].is_null() { rec[k] = t[k].clone(); } }
+    }
+
+    let dst = format!("{}/{}.json", dst_dir, id);
+    snapshot(&dst, "import");
+    fs::write(&dst, serde_json::to_string_pretty(&rec).unwrap()).map_err(|e| e.to_string())?;
+    let tomb = format!("{}/deleted_{}", dst_dir, sid);
+    if Path::new(&tomb).exists() { snapshot(&tomb, "undelete"); let _ = fs::remove_file(&tomb); }
+
+    Ok(json!({ "ok": true, "wrote": dst, "id": id,
+               "title": info["title"], "turns": info["turns"] }))
 }
 
 #[cfg_attr(target_os = "windows", tauri::command(async))]
@@ -770,8 +1098,8 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            scan, chat_detail, export_chat, copy_chat, rename_chat, delete_chat,
-            undelete_chat, set_label, run_vault, set_zoom
+            scan, chat_detail, export_chat, copy_chat, import_session, rename_chat,
+            delete_chat, undelete_chat, set_label, run_vault, set_zoom
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch Ferry");
