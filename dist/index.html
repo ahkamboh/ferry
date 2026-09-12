@@ -257,21 +257,12 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 .route .who{transition:opacity .3s}
 .route .who.out{opacity:.45}                                   /* where a moved chat left */
 .askc .stat{margin-top:16px;text-align:center;font-size:13px;font-weight:560;color:var(--ink)}
-/* zoom control in the top bar: − 100% + (the percentage resets) */
-.zoomg{display:inline-flex;align-items:center;height:30px;border:1px solid var(--line);border-radius:8px;
- background:var(--panel);overflow:hidden}
-.zoomg button{height:100%;padding:0 10px;font-size:14px;line-height:1;color:var(--dim);transition:.13s}
-.zoomg button:hover{background:var(--raise);color:var(--ink)}
-.zoomg #zl{min-width:50px;padding:0 6px;font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;
- border-left:1px solid var(--line);border-right:1px solid var(--line)}
 </style></head><body>
 
 <div id=bar>
   <span class=brand><span class=nm>Ferry</span></span>
   <span style="flex:1"></span>
   <span style="flex:1"></span><span id=lock></span>
-  <span class=zoomg id=zoom role=group aria-label="Zoom"><button id=zout onclick=zoomBy(-1) aria-label="Zoom out">−</button><button
-    id=zl onclick="setZoom(1,true)" aria-label="Reset zoom">100%</button><button id=zin onclick=zoomBy(1) aria-label="Zoom in">+</button></span>
   <button class=btn onclick=vault() title="Copy every chat and transcript into ~/.ferry. Protects against Claude deleting a chat and against the 30-day transcript cleanup.">Back up</button>
   <button class=btn onclick=refresh() title="Re-read the accounts and chats from disk">Refresh</button>
 </div>
@@ -453,24 +444,22 @@ document.addEventListener("keydown",e=>{
   if(MODK(e)&&e.key.toLowerCase()==="w"){e.preventDefault();closeChat();}});
 
 /* ---------- zoom ----------
-   Ctrl/Cmd + and - step through the levels, Ctrl/Cmd 0 resets (so does a click
-   on the percentage), and Ctrl/Cmd + wheel works too. In the app the webview
-   itself zooms, like a browser, so layout and drag and drop stay right, and
-   the level is remembered. The browser-served UI leaves zoom to the browser. */
+   Ctrl/Cmd + and - step through the levels, Ctrl/Cmd 0 resets, and Ctrl/Cmd +
+   wheel works too - the gestures a window is expected to answer, so the top bar
+   does not need to say so. In the app the webview itself zooms, like a browser,
+   so layout and drag and drop stay right, and the level is remembered. The
+   browser-served UI leaves zoom to the browser. */
 const INAPP=!!window.__TAURI_INTERNALS__;
 const ZOOMS=[.67,.75,.8,.9,1,1.1,1.25,1.5];
 let zoomLv=1;
 function setZoom(z,say){
   zoomLv=ZOOMS.reduce((a,b)=>Math.abs(b-z)<Math.abs(a-z)?b:a);   // snap to a level
   try{localStorage.setItem("ferry.zoom",zoomLv);}catch(e){}
-  $("#zl").textContent=Math.round(zoomLv*100)+"%";
   iv("set_zoom",{scale:zoomLv}).catch(()=>{});
-  if(say)toast("Zoom "+Math.round(zoomLv*100)+"%");
+  if(say)toast("Zoom "+Math.round(zoomLv*100)+"%");   // the only thing that says so
 }
 const zoomBy=d=>setZoom(ZOOMS[Math.max(0,Math.min(ZOOMS.length-1,ZOOMS.indexOf(zoomLv)+d))],true);
 if(INAPP){
-  const k=MAC?"⌘":"Ctrl ";
-  $("#zout").title="Zoom out ("+k+"−)";$("#zin").title="Zoom in ("+k+"+)";$("#zl").title="Reset zoom ("+k+"0)";
   document.addEventListener("keydown",e=>{
     if(!MODK(e)||e.altKey)return;
     if(e.key==="+"||e.key==="="||e.code==="NumpadAdd"){e.preventDefault();zoomBy(1);}
@@ -481,7 +470,7 @@ if(INAPP){
     if(Date.now()-lastWheel<150)return;lastWheel=Date.now();zoomBy(e.deltaY<0?1:-1);},{passive:false});
   let saved=1;try{saved=+localStorage.getItem("ferry.zoom")||1;}catch(e){}
   setZoom(saved);                                // bring back the last level
-}else $("#zoom").style.display="none";
+}
 
 /* ---------- close and confirm (Windows) ---------- */
 function closeChat(){if(!chatPath)return;
