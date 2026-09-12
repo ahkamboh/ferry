@@ -238,9 +238,31 @@ SOURCES = {"cli":            ("cli",     "Claude Code CLI"),
            "claude-vscode":  ("vscode",  "VS Code"),
            "claude-desktop": ("desktop", "Desktop, no record")}
 INDEX = f"{VAULT}/sessions.json"
+# bumped whenever what is read out of a transcript changes, so an index written
+# by an older Ferry is re-read rather than believed
+INDEX_V = 3
 # fields that describe the account and its environment rather than the chat
 INHERIT = ("envScopeId", "permissionMode", "effort", "chromePermissionMode",
            "remoteControlAutoEligible", "classifierSummaryEnabled")
+
+def title_from(text):
+    """A chat's name, taken from the first thing the person typed. The desktop
+    app titles its own chats in a few words, so a whole opening prompt would
+    tower over them in the list: keep the first sentence, and cut that at a
+    word. A full stop only ends a sentence when a space follows it, or
+    "github.com" and "ocid1.tenancy.oc1" would each end one."""
+    one = " ".join(text.split())
+    s = one
+    for i, ch in enumerate(one):
+        if ch in ".!?":
+            if i + 1 >= len(one): break        # one sentence: it keeps its mark
+            if one[i+1] == " ":
+                if 12 <= i <= 70: s = one[:i]
+                break
+    if len(s) <= 60: return s
+    cut = s[:60]
+    i = cut.rfind(" ")
+    return (cut[:i] if i >= 30 else cut.rstrip()) + "…"
 
 def iso_ms(s):
     """Transcripts date every line in ISO-8601 UTC; records count milliseconds."""
@@ -258,7 +280,7 @@ def read_session(path):
     so they are never parsed - that keeps a 90 MB transcript cheap to read."""
     try: st = os.stat(path)
     except Exception: return None
-    info = {"entrypoint":"", "cwd":"", "version":"", "branch":"", "model":"",
+    info = {"v": INDEX_V, "entrypoint":"", "cwd":"", "version":"", "branch":"", "model":"",
             "title":"", "turns":0, "size": st.st_size}
     first = last = None
     try:
@@ -286,9 +308,11 @@ def read_session(path):
                         c = " ".join(x.get("text","") for x in c
                                      if isinstance(x, dict) and x.get("type") == "text")
                     c = c.strip() if isinstance(c, str) else ""
-                    if c and not c.startswith("<"):
+                    # "[Request interrupted...]" is written by the harness when you
+                    # stop a tool, not typed: neither a turn nor a name for the chat
+                    if c and not c.startswith(("<", "[Request interrupted")):
                         info["turns"] += 1
-                        if not info["title"]: info["title"] = " ".join(c.split())[:90]
+                        if not info["title"]: info["title"] = title_from(c)
     except Exception: pass
     mt = int(st.st_mtime * 1000)
     info["title"]   = info["title"] or "(untitled)"
@@ -303,7 +327,8 @@ def session_info(cache, path, state):
     try: st = os.stat(path)
     except Exception: return None
     hit = cache.get(path)
-    if hit and hit.get("size") == st.st_size and hit.get("mtime") == int(st.st_mtime):
+    if (hit and hit.get("v") == INDEX_V
+            and hit.get("size") == st.st_size and hit.get("mtime") == int(st.st_mtime)):
         return hit
     info = read_session(path)
     if not info: return None
