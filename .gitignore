@@ -11,6 +11,9 @@ src-tauri/icons/icon.iconset/
 # local scratch
 *.log
 
+# recorded demo output (the published copy lives on GitHub)
+renders/
+
 # python
 __pycache__/
 *.pyc
