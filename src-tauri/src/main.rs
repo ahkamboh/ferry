@@ -930,6 +930,87 @@ fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<Value,
     Ok(json!({ "ok": true, "wrote": dst, "moved": mv }))
 }
 
+/// A chat started without picking a folder runs in a workspace the app makes
+/// for it, and shows as having no folder at all.
+fn is_scratch(cwd: &str) -> bool {
+    cwd.is_empty() || cwd.to_lowercase().contains("scratch-workspaces")
+}
+
+/// Put one transcript under a second name, so it can be found from another
+/// folder as well. A hard link, not a copy: one file, two names, not a byte
+/// duplicated, and the folder it came from keeps working. Only a volume that
+/// refuses links falls back to copying. Returns (linked, copied).
+fn relink(src: &str, dst: &str) -> (u64, u64) {
+    if Path::new(dst).exists() || !Path::new(src).exists() { return (0, 0); }
+    if let Some(par) = Path::new(dst).parent() { let _ = fs::create_dir_all(par); }
+    if fs::hard_link(src, dst).is_ok() { return (1, 0); }
+    if fs::copy(src, dst).is_ok() { return (0, 1); }
+    (0, 0)
+}
+
+/// Point a chat at a folder.
+///
+/// A chat's cwd is two things at once: the folder Claude names in its header
+/// and resumes in, and where the conversation is looked up - the transcript
+/// lives under ~/.claude/projects/<encoded cwd>/. So changing only the cwd
+/// would show the new folder and lose the conversation with it; every
+/// transcript the chat is made of has to be findable under the new name too.
+#[tauri::command]
+async fn set_folder(app: tauri::AppHandle, path: String, folder: Option<String>) -> Result<Value, String> {
+    guard()?;
+    if !under(&sess(), &path) {
+        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
+    }
+    let mut rec = read_json(&path).ok_or("chat unreadable")?;
+    let was = rec["cwd"].as_str().unwrap_or("").to_string();
+
+    let dir = match folder.filter(|f| !f.trim().is_empty()) {
+        Some(f) => f,
+        None => {
+            use tauri_plugin_dialog::DialogExt;
+            // open where the chat already is, or - for a chat that never had a
+            // folder - the last real one its window remembers
+            let start = [was.as_str(), rec["scratchPromptRecents"].as_str().unwrap_or(""), &home()]
+                .into_iter().find(|d| !is_scratch(d) && Path::new(d).is_dir())
+                .unwrap_or("").to_string();
+            // the panel must be driven by the main thread; this command is not
+            // on it, so hand the choice back over a channel instead of blocking
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.dialog().file().set_directory(&start)
+                .pick_folder(move |p| { let _ = tx.send(p); });
+            match rx.recv().map_err(|e| e.to_string())? {
+                Some(fp) => fp.into_path().map_err(|e| e.to_string())?.to_string_lossy().to_string(),
+                None => return Ok(json!({ "ok": false, "cancelled": true })),
+            }
+        }
+    };
+    if !Path::new(&dir).is_dir() { return Err(format!("no such folder: {}", dir)); }
+    if dir == was { return Ok(json!({ "ok": true, "unchanged": true, "cwd": dir })); }
+
+    let dst_dir = project_dir(&dir);
+    fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
+    let (mut linked, mut copied) = (0u64, 0u64);
+    for t in transcripts_for(&rec) {
+        let (Some(src), Some(id)) = (t["path"].as_str(), t["id"].as_str()) else { continue };
+        let (l, c) = relink(src, &format!("{}/{}.jsonl", dst_dir, id));
+        linked += l; copied += c;
+        let src_dir = Path::new(src).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        if let Ok(g) = glob::glob(&format!("{}/{}/subagents/*.jsonl", src_dir, id)) {
+            for s in g.flatten() {
+                let name = s.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let (l, c) = relink(&s.to_string_lossy(),
+                                    &format!("{}/{}/subagents/{}", dst_dir, id, name));
+                linked += l; copied += c;
+            }
+        }
+    }
+    snapshot(&path, "folder");
+    rec["cwd"] = json!(dir);
+    rec["originCwd"] = json!(dir);
+    fs::write(&path, serde_json::to_string_pretty(&rec).unwrap()).map_err(|e| e.to_string())?;
+    Ok(json!({ "ok": true, "cwd": dir, "was": was, "linked": linked, "copied": copied }))
+}
+
 /// Fields that describe the account and its environment rather than the chat.
 /// An imported record takes them from a record the app itself wrote for that
 /// account, so it never invents a value that does not resolve there.
@@ -1128,8 +1209,8 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            scan, chat_detail, export_chat, copy_chat, import_session, rename_chat,
-            delete_chat, undelete_chat, set_label, run_vault, set_zoom
+            scan, chat_detail, export_chat, copy_chat, import_session, set_folder,
+            rename_chat, delete_chat, undelete_chat, set_label, run_vault, set_zoom
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch Ferry");
