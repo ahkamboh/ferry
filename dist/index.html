@@ -497,12 +497,13 @@ function chatAt(p){for(const s of S.scopes)for(const c of s.chats)if(c.path===p)
 const isSrc=s=>!!(s&&s.kind==="source");
 const accts=()=>S.scopes.filter(s=>!isSrc(s));
 const srcs=()=>S.scopes.filter(isSrc);
-const SRCAV={cli:">_",vscode:"{}",cursor:"⌁",desktop:"[]",other:"··"};
+const SRCAV={cli:">_",vscode:"{}",cursor:"⌁",sdk:"{;}",desktop:"[]",other:"··"};
 const SRCTIP={cli:"Chats you started with the claude command",
               vscode:"Chats you started in the VS Code extension",
               // Cursor keeps its chats in a database of its own, so one is
               // converted rather than moved, and only in this direction
               cursor:"Conversations from Cursor. Adding one converts it into a Claude chat;\nnothing is ever written back into Cursor.",
+              sdk:"Sessions run through the Agent SDK rather than typed by anyone",
               desktop:"Desktop sessions no account has a record for",
               other:"Sessions no account has a record for"};
 const short=s=>isSrc(s)?s.sourceName
