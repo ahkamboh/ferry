@@ -80,8 +80,8 @@ Ferry finds them. Each transcript states which surface wrote it, so they arrive 
 ```
 NOT IN AN ACCOUNT
   >_  Claude Code CLI      6 chats · no account yet
-  {}  VS Code              7 chats · no account yet
-  ⌁   Cursor              11 chats · no account yet
+  VS  VS Code              7 chats · no account yet
+  Cu  Cursor              11 chats · no account yet
 ```
 
 Open one and it reads like any other chat. **Add to account** then writes the record it never had, and from that moment Claude lists it, and Ferry can copy, move, rename, archive and delete it like the rest. Nothing is written back into the transcript, so the session stays resumable from where it came.
