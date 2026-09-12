@@ -60,6 +60,8 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
    is never a drop target and wears a mark rather than a coloured badge. */
 .av.src{background:var(--line);color:var(--dim);font-size:11px;letter-spacing:-.05em;
  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+/* a source that has a mark of its own wears it instead of a glyph */
+.av svg{width:17px;height:17px;display:block}
 .srcn{display:inline-block;padding:1px 6px;border-radius:6px;border:1px solid var(--line);
  background:var(--raise);color:var(--dim);font-size:10px;font-weight:600;margin-left:6px;
  vertical-align:1px;letter-spacing:.01em}
@@ -497,7 +499,21 @@ function chatAt(p){for(const s of S.scopes)for(const c of s.chats)if(c.path===p)
 const isSrc=s=>!!(s&&s.kind==="source");
 const accts=()=>S.scopes.filter(s=>!isSrc(s));
 const srcs=()=>S.scopes.filter(isSrc);
-const SRCAV={cli:">_",vscode:"{}",cursor:"⌁",sdk:"{;}",desktop:"[]",other:"··"};
+/* VS Code and Cursor have marks of their own, so a source wears its own rather
+   than two characters standing in for it. Drawn here in the app's own style,
+   like the mascot and everything else: nothing is fetched at runtime. The two
+   that have no mark - a terminal, the SDK - keep their glyph. */
+const SRCAV={cli:">_",sdk:"{;}",desktop:"[]",other:"··"};
+const SRCLOGO={
+  // the folded ribbon, with the notch cut out of it
+  vscode:'<svg viewBox="0 0 24 24" aria-hidden=true><path fill="#0098ff" fill-rule="evenodd" '+
+    'd="M17.5 2 22.5 4.2v15.6L17.5 22 2.2 15.6 5.4 12 2.2 8.4 17.5 2Zm0 5.6L11.2 12l6.3 4.4V7.6Z"/></svg>',
+  // three faces of a cube, lit from above
+  cursor:'<svg viewBox="0 0 24 24" aria-hidden=true>'+
+    '<path fill="#c4c4c4" d="M12 1.8 20.6 6.9 12 12 3.4 6.9Z"/>'+
+    '<path fill="#8c8c8c" d="M20.6 6.9v10.2L12 22.2V12Z"/>'+
+    '<path fill="#5e5e5e" d="M3.4 6.9 12 12v10.2L3.4 17.1Z"/></svg>'};
+const srcMark=s=>SRCLOGO[s.source]||esc(SRCAV[s.source]||"··");
 const SRCTIP={cli:"Chats you started with the claude command",
               vscode:"Chats you started in the VS Code extension",
               // Cursor keeps its chats in a database of its own, so one is
@@ -514,7 +530,7 @@ const whoTip=s=>isSrc(s)
   .filter((x,i,a)=>x&&a.indexOf(x)===i).concat("Account "+s.acct.slice(0,8)+(s.isCurrent?" · signed in now":"")).join("\n");
 const avatar=s=>'<span class="av'+(isSrc(s)?' src':'')+'"'+
   (isSrc(s)?'':' style="background:hsl('+hue(s.acct)+' 42% 48%)"')+'>'+
-  esc(isSrc(s)?(SRCAV[s.source]||"··"):((s.profile&&s.profile.name)||label(s)).slice(0,2).toUpperCase())+'</span>';
+  (isSrc(s)?srcMark(s):esc(((s.profile&&s.profile.name)||label(s)).slice(0,2).toUpperCase()))+'</span>';
 function who(s,id){
   return '<span class=who id='+id+' title="'+esc(whoTip(s))+'">'+avatar(s)+'<span>'+esc(short(s))+'</span></span>';}
 
@@ -748,13 +764,13 @@ function drawSide(){
   const s0=scope(),A=accts(),R=srcs();
   const row=s=>{
     const nm=RICH?short(s):label(s);
-    const ini=isSrc(s)?(SRCAV[s.source]||"··"):((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase();
+    const ini=isSrc(s)?srcMark(s):esc(((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase());
     const em=!isSrc(s)&&RICH&&s.profile&&s.profile.email;          // Windows: name, then address
     const mt=isSrc(s)?s.chats.length+' chat'+(s.chats.length===1?'':'s')+' · no account yet'
       :s.chats.length+' chats'+(s.deleted.length?' · '+s.deleted.length+' deleted':'');
     return '<div class="acct '+(isSrc(s)?'src ':'')+(key(s)===scopeKey?'on':'')+'" data-k="'+key(s)+'" onclick="pick(\''+key(s)+'\')"'+
         (RICH?' title="'+esc(whoTip(s))+'"':'')+'>'+
-      '<div class="av'+(isSrc(s)?' src':'')+'"'+(isSrc(s)?'':' style="background:hsl('+hue(s.acct)+' 42% 48%)"')+'>'+esc(ini)+'</div>'+
+      '<div class="av'+(isSrc(s)?' src':'')+'"'+(isSrc(s)?'':' style="background:hsl('+hue(s.acct)+' 42% 48%)"')+'>'+ini+'</div>'+
       '<div class=bd><div class=who>'+(s.isCurrent?'<span class=dotc></span>':'')+esc(nm)+'</div>'+
       (em?'<div class=em>'+esc(em)+'</div>':'')+
       '<div class=mt>'+mt+'</div>'+
