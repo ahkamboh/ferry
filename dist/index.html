@@ -492,7 +492,7 @@ const srcs=()=>S.scopes.filter(isSrc);
    than two characters standing in for it. Drawn here in the app's own style,
    like the mascot and everything else: nothing is fetched at runtime. The two
    that have no mark - a terminal, the SDK - keep their glyph. */
-const SRCAV={cli:">_",sdk:"{;}",desktop:"[]",other:"··"};
+const SRCAV={cli:">_",desktop:"[]",other:"··"};
 const SRCLOGO={
   // the folded ribbon, with the notch cut out of it
   vscode:'<svg viewBox="0 0 24 24" aria-hidden=true><path fill="#0098ff" fill-rule="evenodd" '+
@@ -508,7 +508,6 @@ const SRCTIP={cli:"Chats you started with the claude command",
               // Cursor keeps its chats in a database of its own, so one is
               // converted rather than moved, and only in this direction
               cursor:"Conversations from Cursor. Adding one converts it into a Claude chat;\nnothing is ever written back into Cursor.",
-              sdk:"Sessions run through the Agent SDK rather than typed by anyone",
               desktop:"Desktop sessions no account has a record for",
               other:"Sessions no account has a record for"};
 const short=s=>isSrc(s)?s.sourceName
