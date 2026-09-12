@@ -240,6 +240,10 @@ def transcripts_for(rec):
 
 SOURCES = {"cli":            ("cli",     "Claude Code CLI"),
            "claude-vscode":  ("vscode",  "VS Code"),
+           # sessions something ran through the Agent SDK rather than a person
+           # typing: they read like chats but were nobody's conversation
+           "sdk-cli":        ("sdk",     "Agent SDK"),
+           "sdk":            ("sdk",     "Agent SDK"),
            "claude-desktop": ("desktop", "Desktop, no record"),
            "cursor":         ("cursor",  "Cursor")}
 INDEX = f"{VAULT}/sessions.json"
@@ -449,7 +453,10 @@ def scan():
                      key=lambda s: -(max([c["last"] or 0 for c in s["chats"]], default=0)))
     # CLI and VS Code sessions come after the accounts: they are where chats are
     # imported from, not an account you can send one to
-    return {"exportDir": export_dir(), "scopes": ordered + source_scopes(claimed),
+    sources = source_scopes(claimed)
+    cs = cursor_scope()
+    if cs: sources.append(cs)
+    return {"exportDir": export_dir(), "scopes": ordered + sources,
             "current": cur, "appRunning": app_running(), "vault": VAULT}
 
 # ---------- mutations ----------
@@ -698,6 +705,7 @@ def page():
     return html.encode()
 
 def chat_detail(path):
+    if str(path).startswith("cursor:"): return cursor_detail(str(path)[len("cursor:"):])
     rec = read_rec(path)
     if not rec: raise RuntimeError("chat unreadable")
     tr = transcripts_for(rec)
@@ -713,7 +721,9 @@ OPS = {
     "chat_detail":   lambda path, **k: chat_detail(path),
     "export_chat":   lambda **k: op_export(**k),
     "copy_chat":     lambda path, acct, org, mv=False, **k: op_copy(path, acct, org, move=mv),
-    "import_session":lambda path, acct, org, **k: op_import(path, acct, org),
+    "import_session":lambda path, acct, org, **k: (
+        op_cursor_import(str(path)[len("cursor:"):], acct, org)
+        if str(path).startswith("cursor:") else op_import(path, acct, org)),
     # the browser has no native folder panel, so the UI asks for the path itself
     "set_folder":    lambda path, folder=None, **k: op_set_folder(path, folder),
     "rename_chat":   lambda path, title, **k: op_rename(path, title),
@@ -747,7 +757,7 @@ class H(BaseHTTPRequestHandler):
         if not fn: return self._send({"__error": f"unknown command {cmd!r}"}, 400)
         # a transcript is a legitimate target now: it is what a source chat is
         p = args.get("path")
-        if p and not (under(SESS, str(p)) or
+        if p and not (str(p).startswith("cursor:") or under(SESS, str(p)) or
                       (str(p).endswith(".jsonl") and under(PROJ, str(p)))):
             return self._send({"__error": f"path is outside the sessions and projects folders"
                                           f"\n  path: {p}\n  roots: {SESS}\n         {PROJ}"}, 400)
@@ -1113,6 +1123,38 @@ def op_cursor_import(cid, acct, org, force=False):
     rec["messages"] = len(msgs)
     rec["transcript"] = dst
     return rec
+
+def cursor_scope():
+    """Cursor's conversations as one more source to import from. They have no
+    transcript to point at until one is written, so they are addressed by
+    "cursor:<conversation id>" rather than by a path."""
+    chats = cursor_chats()
+    if not chats: return None
+    out = [{"id": "local_" + c["id"], "sid": c["id"], "title": c["title"],
+            "cwd": c["folder"], "model": "", "created": c["created"], "last": c["last"],
+            "turns": c["said"], "archived": c["archived"], "forkedFrom": None,
+            "files": 1, "subs": 0, "bytes": 0, "missing": 0, "absent": 0,
+            "branch": "", "version": "", "source": "cursor",
+            "path": "cursor:" + c["id"]} for c in chats]
+    out.sort(key=lambda c: c["last"] or 0, reverse=True)
+    return {"acct": "source:cursor", "org": "source", "kind": "source",
+            "source": "cursor", "sourceName": "Cursor", "chats": out,
+            "deleted": [], "connectors": {}, "cwds": {}, "isCurrent": False,
+            "label": "", "profile": None}
+
+def cursor_detail(cid):
+    """A Cursor chat read straight out of Cursor, before anything is written."""
+    hit = [x for x in cursor_chats() if x["id"] == cid]
+    if not hit: raise RuntimeError("no such Cursor chat")
+    chat = hit[0]
+    msgs = [{"role": m["role"], "t": (m["t"] or "")[:16], "text": m["text"], "tools": []}
+            for m in cursor_messages(cid)]
+    rec = {"sessionId": None, "cliSessionId": cid, "title": chat["title"],
+           "cwd": chat["folder"], "model": "", "createdAt": chat["created"],
+           "lastActivityAt": chat["last"], "completedTurns": len(msgs),
+           "isArchived": chat["archived"], "source": "cursor", "sourceName": "Cursor"}
+    return {"rec": rec, "files": [], "source": "cursor", "sourceName": "Cursor",
+            "bytes": sum(len(m["text"]) for m in msgs), "subs": 0, "msgs": msgs}
 
 def cmd_cursor():
     if not cursor_db():
