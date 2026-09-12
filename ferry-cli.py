@@ -5,12 +5,18 @@
   ./ferry-cli.py list                  print accounts + chat counts
   ./ferry-cli.py vault                 archive every chat + transcript into ~/.ferry
   ./ferry-cli.py export <text|id> [md|txt|json]   save a chat to ~/Downloads
+  ./ferry-cli.py import <text|id> <account>       add a CLI or VS Code chat
+                                                  to an account
+
+Chats started in the CLI or in VS Code have no per-account record, so Claude
+lists them nowhere. "list" shows them under the accounts; "import" gives one a
+record in the account you name. The transcript itself is never moved.
 
 Writes are refused while the Claude desktop app is running; every mutation
 snapshots the affected file into the vault first.
 """
 import json, os, re, shutil, sys, glob, subprocess, threading, webbrowser
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HOME  = (os.environ.get("USERPROFILE") or os.path.expanduser("~")) \
@@ -186,10 +192,21 @@ def known_profiles(found):
     return known
 
 def read_rec(path):
+    # a session no account owns has no record on disk: describe it from its
+    # own transcript, so everything that reads a chat can read one of those too
+    if str(path).endswith(".jsonl") and under(PROJ, str(path)):
+        return source_rec(path)
     # explicit utf-8: Windows defaults to the ANSI codepage, which fails on
     # non-ASCII titles and silently drops the chat
     try: return json.load(open(path, encoding="utf-8"))
     except Exception: return None
+
+def owned(path):
+    """Renaming, copying or deleting needs a record an account owns. A bare
+    transcript has none, and is never the thing to write to."""
+    if str(path).endswith(".jsonl"):
+        raise RuntimeError("this chat is not in an account yet - import it first")
+    return path
 
 def transcripts_for(rec):
     """Every transcript file that makes up one chat: current + prior + subagents."""
@@ -208,10 +225,158 @@ def transcripts_for(rec):
                     "subagents": [{"path":s,"size":os.path.getsize(s)} for s in subs]})
     return out
 
+# ---------- sessions no account claims ----------
+# Claude Code writes a transcript for every session it runs, wherever it runs:
+# the CLI, the VS Code extension and the desktop app all append to the same
+# ~/.claude/projects tree. Only the desktop app also writes the small
+# per-account record Ferry lists, so a chat started in the CLI or in VS Code is
+# on disk and belongs to nobody - readable, but invisible to every account.
+# These are listed as read-only sources. A chat can be imported out of one into
+# an account; nothing is ever written back into them.
+
+SOURCES = {"cli":            ("cli",     "Claude Code CLI"),
+           "claude-vscode":  ("vscode",  "VS Code"),
+           "claude-desktop": ("desktop", "Desktop, no record")}
+INDEX = f"{VAULT}/sessions.json"
+# fields that describe the account and its environment rather than the chat
+INHERIT = ("envScopeId", "permissionMode", "effort", "chromePermissionMode",
+           "remoteControlAutoEligible", "classifierSummaryEnabled")
+
+def iso_ms(s):
+    """Transcripts date every line in ISO-8601 UTC; records count milliseconds."""
+    try:
+        d  = datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        ms = int(s[20:23]) if len(s) >= 23 and s[19] == "." else 0
+        return int(d.timestamp()*1000) + ms
+    except Exception:
+        return None
+
+def read_session(path):
+    """Everything a transcript says about itself, in one pass: which surface
+    wrote it, where it ran, when it started and stopped, how many turns it took
+    and what to call it. Lines over a megabyte are tool output, never metadata,
+    so they are never parsed - that keeps a 90 MB transcript cheap to read."""
+    try: st = os.stat(path)
+    except Exception: return None
+    info = {"entrypoint":"", "cwd":"", "version":"", "branch":"", "model":"",
+            "title":"", "turns":0, "size": st.st_size}
+    first = last = None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if len(line) > (1 << 20): continue
+                try: d = json.loads(line)
+                except Exception: continue
+                ty = d.get("type")
+                if ty not in ("user", "assistant"): continue
+                for k, f in (("entrypoint","entrypoint"), ("cwd","cwd"),
+                             ("version","version"), ("branch","gitBranch")):
+                    if not info[k] and d.get(f): info[k] = d[f]
+                if ty == "assistant" and not info["model"]:
+                    info["model"] = ((d.get("message") or {}).get("model")) or ""
+                t = d.get("timestamp")
+                if t:
+                    if first is None: first = t
+                    if last is None or t > last: last = t
+                # a turn is a prompt the person typed: not a subagent's, and not
+                # the harness's own <command-name> and <system-reminder> lines
+                if ty == "user" and not d.get("isSidechain") and not d.get("isMeta"):
+                    c = (d.get("message") or {}).get("content")
+                    if isinstance(c, list):
+                        c = " ".join(x.get("text","") for x in c
+                                     if isinstance(x, dict) and x.get("type") == "text")
+                    c = c.strip() if isinstance(c, str) else ""
+                    if c and not c.startswith("<"):
+                        info["turns"] += 1
+                        if not info["title"]: info["title"] = " ".join(c.split())[:90]
+    except Exception: pass
+    mt = int(st.st_mtime * 1000)
+    info["title"]   = info["title"] or "(untitled)"
+    info["created"] = iso_ms(first or "") or mt
+    info["last"]    = iso_ms(last or "") or mt
+    return info
+
+def session_info(cache, path, state):
+    """Reading every unclaimed transcript on every scan would mean re-reading
+    hundreds of megabytes to learn nothing new, so what each one said about
+    itself is kept in the vault and re-read only when the file changes."""
+    try: st = os.stat(path)
+    except Exception: return None
+    hit = cache.get(path)
+    if hit and hit.get("size") == st.st_size and hit.get("mtime") == int(st.st_mtime):
+        return hit
+    info = read_session(path)
+    if not info: return None
+    info["mtime"] = int(st.st_mtime)
+    cache[path] = info
+    state["dirty"] = True
+    return info
+
+def subagents_of(d, sid):
+    subs = glob.glob(f"{d}/{sid}/subagents/*.jsonl")
+    return len(subs), sum(os.path.getsize(s) for s in subs if os.path.exists(s))
+
+def source_rec(path):
+    """The record a CLI or VS Code session would have, described from the
+    transcript itself. The same shape the rest of the tool already reads."""
+    info = read_session(path)
+    if not info: raise RuntimeError("transcript unreadable")
+    sid = os.path.splitext(os.path.basename(path))[0]
+    kind, name = SOURCES.get(info["entrypoint"], ("other", "Other sessions"))
+    return {"sessionId": None, "cliSessionId": sid, "title": info["title"],
+            "cwd": info["cwd"], "model": info["model"],
+            "createdAt": info["created"], "lastActivityAt": info["last"],
+            "completedTurns": info["turns"], "isArchived": False,
+            "gitBranch": info["branch"], "cliVersion": info["version"],
+            "source": kind, "sourceName": name}
+
+def source_scopes(claimed):
+    """Every transcript no account's record claims, grouped by the surface that
+    wrote it and shaped like an account scope so the rest of the tool can list it."""
+    cache, state, groups, live = session_index(), {"dirty": False}, {}, set()
+    for path in glob.glob(f"{PROJ}/*/*.jsonl"):
+        sid = os.path.splitext(os.path.basename(path))[0]
+        live.add(path)
+        if sid in claimed: continue
+        info = session_info(cache, path, state)
+        if not info: continue
+        nsub, subb = subagents_of(os.path.dirname(path), sid)
+        kind, name = SOURCES.get(info["entrypoint"], ("other", "Other sessions"))
+        g = groups.setdefault(kind, {
+            "acct": f"source:{kind}", "org": "source", "kind": "source",
+            "source": kind, "sourceName": name, "chats": [], "deleted": [],
+            "connectors": {}, "cwds": {}, "isCurrent": False, "label": "", "profile": None})
+        g["chats"].append({
+            "id": "local_" + sid, "sid": sid, "title": info["title"],
+            "cwd": info["cwd"], "model": info["model"], "created": info["created"],
+            "last": info["last"], "turns": info["turns"], "archived": False,
+            "forkedFrom": None, "files": 1, "subs": nsub,
+            "bytes": info["size"] + subb, "missing": 0, "absent": 0,
+            "branch": info["branch"], "version": info["version"],
+            "source": kind, "path": path})
+    # forget transcripts retention has since pruned, so the index does not grow
+    # forever on a machine that churns through sessions
+    for stale in [k for k in cache if k not in live]:
+        cache.pop(stale, None); state["dirty"] = True
+    if state["dirty"]:
+        try:
+            os.makedirs(VAULT, exist_ok=True)
+            json.dump(cache, open(INDEX, "w", encoding="utf-8"))
+        except Exception: pass
+    out = list(groups.values())
+    for g in out: g["chats"].sort(key=lambda c: c["last"] or 0, reverse=True)
+    out.sort(key=lambda g: -(max([c["last"] or 0 for c in g["chats"]], default=0)))
+    return out
+
+def session_index():
+    try: return json.load(open(INDEX, encoding="utf-8"))
+    except Exception: return {}
+
 def scan():
     """Full inventory: every account/org scope, its chats and tombstones."""
     cur, labs, profs = current_account(), labels(), profiles()
     scopes = {}
+    claimed = set()          # transcripts some account already answers for
     for f in glob.glob(f"{SESS}/*/*/local_*.json"):
         acct, org = scope_of(f)
         rec = read_rec(f)
@@ -222,6 +387,7 @@ def scan():
                                     "label":labs.get(acct,""),
                                     "profile":profs.get(acct)})
         tr = transcripts_for(rec)
+        claimed.update(t["id"] for t in tr if t.get("id"))
         s["chats"].append({
             "id": rec.get("sessionId"), "title": rec.get("title") or "(untitled)",
             "cwd": rec.get("cwd",""), "model": rec.get("model",""),
@@ -249,7 +415,11 @@ def scan():
     for s in scopes.values():
         s["chats"].sort(key=lambda c: c["last"] or 0, reverse=True)
         s["deleted"].sort(key=lambda d: d["when"] or 0, reverse=True)
-    return {"exportDir": export_dir(), "scopes": sorted(scopes.values(), key=lambda s: -(max([c["last"] or 0 for c in s["chats"]], default=0)),),
+    ordered = sorted(scopes.values(),
+                     key=lambda s: -(max([c["last"] or 0 for c in s["chats"]], default=0)))
+    # CLI and VS Code sessions come after the accounts: they are where chats are
+    # imported from, not an account you can send one to
+    return {"exportDir": export_dir(), "scopes": ordered + source_scopes(claimed),
             "current": cur, "appRunning": app_running(), "vault": VAULT}
 
 # ---------- mutations ----------
@@ -269,7 +439,7 @@ def guard(force=False):
 def scope_dir(acct, org): return f"{SESS}/{acct}/{org}"
 
 def op_copy(src_path, dst_acct, dst_org, move=False, force=False):
-    guard(force)
+    guard(force); owned(src_path)
     rec = read_rec(src_path)
     if not rec: raise RuntimeError("source chat unreadable")
     sid = rec["sessionId"]
@@ -287,8 +457,52 @@ def op_copy(src_path, dst_acct, dst_org, move=False, force=False):
         open(f"{sd}/deleted_{sid[len('local_'):]}","w").write(str(int(datetime.now().timestamp()*1000)))
     return {"ok": True, "wrote": dst, "moved": move}
 
-def op_rename(path, title, force=False):
+def template_record(d):
+    """The newest record the app itself wrote in this account, to copy the
+    fields that describe the account rather than the chat."""
+    recs = glob.glob(f"{d}/local_*.json")
+    if not recs: return {}
+    try: return json.load(open(max(recs, key=os.path.getmtime), encoding="utf-8")) or {}
+    except Exception: return {}
+
+def op_import(path, acct, org, force=False):
+    """Give a CLI or VS Code session the per-account record it never had, so an
+    account claims it and it becomes an ordinary chat: listed by Claude, and
+    from here on copyable, movable and deletable like any other. The transcript
+    is not touched, so the session stays resumable where it came from."""
     guard(force)
+    if not (str(path).endswith(".jsonl") and under(PROJ, str(path))):
+        raise RuntimeError(f"path is outside the projects folder\n  path: {path}\n  root: {PROJ}")
+    info = read_session(path)
+    if not info: raise RuntimeError("transcript unreadable")
+    if not info["cwd"]: raise RuntimeError("this transcript does not say which folder it ran in")
+    sid = os.path.splitext(os.path.basename(path))[0]
+    d = scope_dir(acct, org)
+    if not os.path.isdir(d): raise RuntimeError("that account has no folder on this machine")
+    # The id the chat keeps for good, derived from the session it already has:
+    # importing the same session twice updates one record instead of making a
+    # second, and a later copy to another account carries the same id.
+    rid = "local_" + sid
+    rec = {"sessionId": rid, "cliSessionId": sid,
+           "cwd": info["cwd"], "originCwd": info["cwd"],
+           "title": info["title"], "titleSource": "auto",
+           "createdAt": info["created"], "lastActivityAt": info["last"],
+           "lastFocusedAt": info["last"], "completedTurns": info["turns"],
+           "isArchived": False}
+    if info["model"]: rec["model"] = info["model"]
+    t = template_record(d)
+    for k in INHERIT:
+        if t.get(k) is not None: rec[k] = t[k]
+    dst = f"{d}/{rid}.json"
+    snapshot(dst, "import")
+    json.dump(rec, open(dst, "w", encoding="utf-8"), indent=1)
+    tomb = f"{d}/deleted_{sid}"
+    if os.path.exists(tomb): snapshot(tomb, "undelete"); os.remove(tomb)
+    return {"ok": True, "wrote": dst, "id": rid,
+            "title": info["title"], "turns": info["turns"]}
+
+def op_rename(path, title, force=False):
+    guard(force); owned(path)
     rec = read_rec(path)
     if not rec: raise RuntimeError("chat unreadable")
     snapshot(path, "rename")
@@ -297,7 +511,7 @@ def op_rename(path, title, force=False):
     return {"ok": True, "title": title}
 
 def op_delete(path, force=False):
-    guard(force)
+    guard(force); owned(path)
     rec = read_rec(path); sid = rec["sessionId"]
     snapshot(path, "delete")
     d = os.path.dirname(path)
@@ -423,6 +637,7 @@ OPS = {
     "chat_detail":   lambda path, **k: chat_detail(path),
     "export_chat":   lambda **k: op_export(**k),
     "copy_chat":     lambda path, acct, org, mv=False, **k: op_copy(path, acct, org, move=mv),
+    "import_session":lambda path, acct, org, **k: op_import(path, acct, org),
     "rename_chat":   lambda path, title, **k: op_rename(path, title),
     "delete_chat":   lambda path, **k: op_delete(path),
     "undelete_chat": lambda acct, org, id, **k: op_undelete(acct, org, id),
@@ -452,9 +667,12 @@ class H(BaseHTTPRequestHandler):
         cmd, args = req.get("cmd"), (req.get("args") or {})
         fn = OPS.get(cmd)
         if not fn: return self._send({"__error": f"unknown command {cmd!r}"}, 400)
-        for key in ("path",):
-            if args.get(key) and not under(SESS, str(args[key])):
-                return self._send({"__error": f"path is outside the sessions folder\n  path: {args[key]}\n  root: {SESS}"}, 400)
+        # a transcript is a legitimate target now: it is what a source chat is
+        p = args.get("path")
+        if p and not (under(SESS, str(p)) or
+                      (str(p).endswith(".jsonl") and under(PROJ, str(p)))):
+            return self._send({"__error": f"path is outside the sessions and projects folders"
+                                          f"\n  path: {p}\n  roots: {SESS}\n         {PROJ}"}, 400)
         try:
             return self._send(fn(**args))
         except TypeError as e:
@@ -523,7 +741,8 @@ def op_export(path, fmt="md", **_):
     if not rec: raise RuntimeError("chat unreadable")
     body, msgs = build_export(rec, fmt)
     ext = fmt if fmt in ("md","txt","json") else "md"
-    short = rec["sessionId"][len("local_"):][:8]
+    # a session no account owns has no record id yet: name it after the one it has
+    short = (rec.get("sessionId") or "local_" + (rec.get("cliSessionId") or ""))[len("local_"):][:8]
     d = export_dir(); os.makedirs(d, exist_ok=True)
     dest = f"{d}/{slug(rec.get('title','chat'))}-{short}.{ext}"
     open(dest,"w",encoding="utf-8").write(body)
@@ -558,6 +777,15 @@ def cmd_list():
     st = scan()
     print(f"vault: {VAULT}   app running: {'YES (writes blocked)' if st['appRunning'] else 'no'}\n")
     for s in st["scopes"]:
+        if s.get("kind") == "source":
+            # chats Claude Code wrote outside the desktop app, owned by nobody
+            print(f"{s['sourceName']}   (not in an account)")
+            print(f"   {len(s['chats'])} chats - add one with: "
+                  f"{os.path.basename(__file__)} import <text|id> <account>")
+            for c in s["chats"][:5]:
+                print(f"     - {c['title'][:58]:60} {ts(c['last'])}  [{c['sid'][:8]}]")
+            print()
+            continue
         who = s["profile"]["email"] if s["profile"] else (s["label"] or "unidentified")
         cur = "  <= CURRENT" if s["isCurrent"] else ""
         print(f"{s['acct'][:8]} / {s['org'][:8]}  {who}{cur}")
@@ -566,6 +794,40 @@ def cmd_list():
         for c in s["chats"][:5]:
             print(f"     - {c['title'][:58]:60} {ts(c['last'])}")
         print()
+
+def cmd_import(query, who):
+    """Add a CLI or VS Code chat to an account. The chat is named by title or
+    session id, the account by email, nickname or the start of its uuid."""
+    st = scan()
+    hits = [(c, s) for s in st["scopes"] if s.get("kind") == "source"
+                   for c in s["chats"]
+                   if query.lower() in c["title"].lower() or c["sid"].startswith(query)]
+    if not hits: return print(f"no chat outside an account matching {query!r}")
+    if len({c["sid"] for c, _ in hits}) > 1:
+        print("matches more than one chat:")
+        for c, s in hits: print(f"   {c['title'][:58]:60} [{c['sid'][:8]}]  {s['sourceName']}")
+        return
+    chat, src = hits[0]
+
+    w = who.lower()
+    accounts = [s for s in st["scopes"] if s.get("kind") != "source"]
+    want = [s for s in accounts
+            if w in ((s["profile"] or {}).get("email","") or "").lower()
+            or w in (s["label"] or "").lower() or s["acct"].lower().startswith(w)]
+    if not want:
+        print(f"no account matching {who!r}. Accounts on this machine:")
+        for s in accounts:
+            print(f"   {s['acct'][:8]}  {(s['profile'] or {}).get('email') or s['label'] or '-'}")
+        return
+    if len(want) > 1:
+        print("matches more than one account:")
+        for s in want: print(f"   {s['acct'][:8]}  {(s['profile'] or {}).get('email') or s['label'] or '-'}")
+        return
+    t = want[0]
+    r = op_import(chat["path"], t["acct"], t["org"])
+    name = (t["profile"] or {}).get("email") or t["label"] or t["acct"][:8]
+    print(f"added {r['title'][:58]!r} ({r['turns']} turns) from {src['sourceName']} to {name}")
+    print(f"  -> {r['wrote']}")
 
 def cmd_ui():
     srv = HTTPServer(("127.0.0.1", PORT), H)
@@ -580,5 +842,8 @@ if __name__ == "__main__":
     if   a=="list":  cmd_list()
     elif a=="vault": print(json.dumps(op_vault(), indent=1))
     elif a=="export": cmd_export(sys.argv[2], sys.argv[3] if len(sys.argv)>3 else "md")
+    elif a=="import":
+        if len(sys.argv) < 4: print("usage: ferry-cli.py import <text|id> <account>")
+        else: cmd_import(sys.argv[2], sys.argv[3])
     elif a=="ui":    cmd_ui()
     else: print(__doc__)
