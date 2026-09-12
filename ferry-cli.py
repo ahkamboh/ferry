@@ -241,10 +241,6 @@ def transcripts_for(rec):
 
 SOURCES = {"cli":            ("cli",     "Claude Code CLI"),
            "claude-vscode":  ("vscode",  "VS Code"),
-           # sessions something ran through the Agent SDK rather than a person
-           # typing: they read like chats but were nobody's conversation
-           "sdk-cli":        ("sdk",     "Agent SDK"),
-           "sdk":            ("sdk",     "Agent SDK"),
            "claude-desktop": ("desktop", "Desktop, no record"),
            "cursor":         ("cursor",  "Cursor")}
 INDEX = f"{VAULT}/sessions.json"
@@ -375,6 +371,9 @@ def source_scopes(claimed):
         if sid in claimed: continue
         info = session_info(cache, path, state)
         if not info: continue
+        # a session the Agent SDK ran is not a chat anyone had: the prompts came
+        # from a program, so it is left where it is
+        if info["entrypoint"] in ("sdk-cli", "sdk"): continue
         nsub, subb = subagents_of(os.path.dirname(path), sid)
         kind, name = SOURCES.get(info["entrypoint"], ("other", "Other sessions"))
         g = groups.setdefault(kind, {

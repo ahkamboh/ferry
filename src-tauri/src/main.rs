@@ -295,9 +295,6 @@ fn source_of(entrypoint: &str) -> (&'static str, &'static str) {
     match entrypoint {
         "cli"            => ("cli",     "Claude Code CLI"),
         "claude-vscode"  => ("vscode",  "VS Code"),
-        // sessions something ran through the Agent SDK rather than a person
-        // typing: they read like chats but were nobody's conversation
-        "sdk-cli" | "sdk" => ("sdk",    "Agent SDK"),
         "claude-desktop" => ("desktop", "Desktop, no record"),
         "cursor"         => ("cursor",  "Cursor"),
         _                => ("other",   "Other sessions"),
@@ -491,6 +488,10 @@ fn source_scopes(claimed: &std::collections::HashSet<String>) -> Vec<Value> {
             live.insert(path.clone());
             if claimed.contains(&id) { continue; }
             let Some(info) = session_info(&mut cache, &path, &mut dirty) else { continue };
+            // A session the Agent SDK ran is not a chat anyone had: the prompts
+            // came from a program. Ferry carries conversations from one account
+            // to another, so these are left where they are.
+            if matches!(info["entrypoint"].as_str().unwrap_or(""), "sdk-cli" | "sdk") { continue; }
             let dir = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
             let (subs, sub_bytes) = subagents_of(&dir, &id);
             let (kind, name) = source_of(info["entrypoint"].as_str().unwrap_or(""));
