@@ -21,7 +21,9 @@ Claude picks up the old context instead of you explaining the project again — 
 ![Size: 5 MB](https://img.shields.io/badge/app-5%20MB-1f1e1d)
 ![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202%20%2B%20Rust-1f1e1d)
 
-<img src="assets/screenshot.png" width="920" alt="Ferry showing accounts, chats and a rendered conversation">
+https://github.com/user-attachments/assets/2b1b0864-71e7-43c3-b78e-b5f65c6dde21
+
+<sub>A chat left behind in an account you're signed out of, carried into the one you're using now — then a deleted chat restored from the archive.</sub>
 
 </div>
 
@@ -44,9 +46,9 @@ Ferry fixes both. It reads the files Claude Code already writes, lets you carry 
 
 | | |
 |---|---|
-| **See every account** | every Claude account you've signed into on this Mac, with its chats — even ones you're signed out of |
-| **Find Cursor chats** | conversations from Cursor, converted into Claude chats in the folder they were worked in |
+| **See every account** | every Claude account you've signed into on this machine, with its chats — even ones you're signed out of |
 | **Find CLI and VS Code chats** | sessions you ran with `claude` or in the editor that no account lists at all — read them, and add one to whichever account you like |
+| **Find Cursor chats** | conversations from Cursor, converted into Claude chats in the folder they were worked in (Windows) |
 | **Identify them** | email for the account you're signed into; connectors, date range and project folders for the rest. Nickname any account and it sticks |
 | **Fix a chat's folder** | a chat you started without picking one shows under **No folder** in Claude — point it at the folder it really belongs to, and Claude names it there |
 | **Read any chat** | full conversation with proper Markdown — tables, code blocks, lists, quotes — plus tool calls |
@@ -167,6 +169,7 @@ python3 ferry-cli.py folder "auth refactor" ~/code/api   # set a chat's folder
 python3 ferry-cli.py cursor                   # Cursor's own chats
 python3 ferry-cli.py cursor-import 4191e56f work@       # convert one to Claude
 python3 ferry-cli.py ui                       # serve the app UI at localhost:7777
+python3 ferry-cli.py ui --demo                # the same UI on synthetic data
 ```
 
 `list` prints the CLI and VS Code chats under the accounts, with a short id for each. `import` takes that id (or a piece of the title) and an account — its address, its nickname, or the start of its uuid — and gives the chat a record there.
@@ -177,8 +180,14 @@ to, `~/Downloads` until you pick another.
 
 `ui` serves the **same interface as the desktop app** — the app's `dist/index.html` with a shim
 that turns its `invoke()` calls into HTTP. Markdown rendering, drag-and-drop and the archive all
-work there; the only difference is the browser can't open a native save panel, so downloads go
-straight to your chosen folder.
+work there; the differences are that the browser can't open a native save panel, so downloads go
+straight to your chosen folder, and zoom is left to the browser's own Ctrl/Cmd + and −.
+
+`ui --demo` runs that same interface against a synthetic Claude tree in a temp folder: three
+invented accounts, eight chats, a pruned transcript and a deleted one. Nothing is stubbed — copy,
+move, delete, restore, download and the archive all execute the real code, just rooted somewhere
+else, and your own chats are never read. It's how the screenshot and the demo above were recorded,
+and it's the quickest way to try Ferry without a Claude install.
 
 Run `vault` from a launchd job or cron and your history is backed up nightly without opening anything.
 
@@ -270,7 +279,11 @@ No. Ferry is an independent tool that reads local files written by Claude Code.
 
 Rust + [Tauri 2](https://tauri.app) with a plain HTML/CSS/JS front end — no framework, no npm, no build step for the UI. The Markdown renderer is about 60 lines, written for this app, so nothing is fetched at runtime.
 
-On Windows, the loading mascot is the Ferry logo come alive: one head per account, joined by
+The demo above was recorded with [scrolltape](https://github.com/ahkamboh/scrolltape) — its cursor
+and its ffmpeg pipeline, driven along a scripted path by [`scripts/record-demo.mjs`](scripts/record-demo.mjs),
+because a three-column app with no page scrolling isn't something an automatic site tour can walk.
+
+The loading mascot is the Ferry logo come alive: one head per account, joined by
 the bar, with a chat that rides across while a copy or move runs. It is pixel art in the style of
 [mascot-maker](https://github.com/ahkamboh/mascot-maker), drawn as SVG in the theme's colours.
 

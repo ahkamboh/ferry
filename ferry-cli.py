@@ -2,6 +2,7 @@
 """ferry - manage Claude Code chats across local accounts.
 
   ./ferry-cli.py ui                    serve the app UI at localhost:7777
+  ./ferry-cli.py ui --demo             same UI, synthetic data, no Claude needed
   ./ferry-cli.py list                  print accounts + chat counts
   ./ferry-cli.py vault                 archive every chat + transcript into ~/.ferry
   ./ferry-cli.py export <text|id> [md|txt|json]   save a chat to ~/Downloads
@@ -19,8 +20,8 @@ record in the account you name. The transcript itself is never moved.
 Writes are refused while the Claude desktop app is running; every mutation
 snapshots the affected file into the vault first.
 """
-import json, os, re, shutil, sys, glob, subprocess, threading, webbrowser
-from datetime import datetime, timezone
+import json, os, re, shutil, sys, glob, subprocess, tempfile, threading, webbrowser
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HOME  = (os.environ.get("USERPROFILE") or os.path.expanduser("~")) \
@@ -611,7 +612,8 @@ def op_undelete(acct, org, sid, force=False):
     for cand in glob.glob(f"{SESS}/*/*/{sid}.json"):
         src = cand; break
     if not src:
-        v = sorted(glob.glob(f"{VAULT}/chats/*/{sid}.json"))
+        # vault layout is chats/<stamp>/<account>/<file>, so two wildcards
+        v = sorted(glob.glob(f"{VAULT}/chats/*/*/{sid}.json"))
         if v: src = v[-1]
     if not src: raise RuntimeError("no surviving copy found in any account or the vault")
     rec = read_rec(src)
@@ -882,6 +884,180 @@ def cmd_list():
         for c in s["chats"][:5]:
             print(f"     - {c['title'][:58]:60} {ts(c['last'])}")
         print()
+
+# ---------- demo mode ----------
+# `ui --demo` serves the real interface against a synthetic Claude tree in a
+# temp folder. Nothing is stubbed: scan, copy, move, delete, undelete, export
+# and the archive all run the code above, just rooted somewhere else. It exists
+# so the app can be demoed, screenshotted or tried out without a Claude install
+# — and without a single real chat title leaving the machine.
+
+DEMO_ACCTS = [
+    # (account uuid, org uuid, email, display name, nickname)
+    ("a1c4f2e8-3b7d-4e19-9c62-5f8a0d1e4b73", "0e2f5a91-7c34-4d88-b1a6-93ef20c5d417",
+     "you@example.com", "you", ""),
+    ("b7d9e3a1-6f52-4a0c-8d31-2e94b7c6f508", "4c81d0b3-9a27-4e5f-bc10-68d3ea7f2915",
+     None, None, "old work account"),
+    ("c9d8e7f6-5a43-4b21-9e08-1d7c6b5a4f39", "7f30a6c2-1b58-4d93-a4e7-05c9182b6de4",
+     None, None, ""),
+]
+
+_MD = """Here's what's actually on disk, and why moving a chat is cheap.
+
+## The two layers
+
+| Layer | Location | Scope |
+|---|---|---|
+| Chat metadata | `claude-code-sessions/<account>/` | per account |
+| Transcripts | `~/.claude/projects/` | **shared by every account** |
+
+Because transcripts are account-agnostic, moving a chat moves about **10 KB of JSON** — the conversation itself never moves.
+
+### What that means
+
+1. Copy is instant, whatever the chat's size
+2. Nothing is duplicated on disk
+3. The original stays exactly where it was
+
+> Deleting a chat only writes a 13-byte tombstone. The conversation survives.
+
+```rust
+fn guard() -> Result<(), String> {
+    if app_running() { Err("Claude is running".into()) }
+    else { Ok(()) }
+}
+```
+
+The record that moves is tiny — here is the whole of it."""
+
+# (title, cwd, model, turns, days_ago, prune_transcript, connectors)
+DEMO_CHATS = [
+    (0, "Rust CLI argument parsing", "/Users/dev/code/argus",       "opus-5",   142,  1, False, ["linear", "sentry"]),
+    (0, "Postgres index tuning",     "/Users/dev/code/ledger",      "opus-5",    88,  3, False, ["linear"]),
+    (0, "Refactor auth middleware",  "/Users/dev/code/acme-api",    "sonnet-5",  61,  6, False, []),
+    (0, "Kubernetes rollout debugging", "/Users/dev/code/platform", "opus-5",    37, 34, True,  []),
+    (0, "Migrate build to esbuild",  "/Users/dev/code/acme-web",    "sonnet-5",  24, 12, False, []),
+    (1, "Stripe webhook retries",    "/Users/dev/code/billing",     "opus-5",    53, 21, False, ["stripe"]),
+    (1, "Flaky integration tests",   "/Users/dev/code/billing",     "sonnet-5",  31, 27, False, []),
+    (2, "Terraform state migration", "/Users/dev/infra",            "opus-5",    19, 63, False, []),
+]
+
+def _demo_ms(days_ago, hour=14):
+    base = datetime(2026, 9, 8, hour, 12, 0)
+    return int((base - timedelta(days=days_ago)).timestamp() * 1000)
+
+def _demo_iso(ms, plus=0):
+    return datetime.fromtimestamp(ms / 1000 + plus).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+def _demo_transcript(title, model, turns, ms):
+    """A believable conversation: enough turns to scroll, one richly formatted
+    answer so the Markdown renderer has tables, code, lists and a quote to show."""
+    lines = []
+    def user(text, at):
+        lines.append(json.dumps({"type": "user", "timestamp": _demo_iso(ms, at),
+                                 "message": {"content": text}}))
+    def claude(text, at, tools=()):
+        content = [{"type": "text", "text": text}]
+        for name, inp in tools:
+            content.append({"type": "tool_use", "name": name, "input": inp})
+        lines.append(json.dumps({"type": "assistant", "timestamp": _demo_iso(ms, at),
+                                 "message": {"content": content}}))
+
+    user("how does ferry move a chat between accounts without copying the whole transcript?", 0)
+    claude(_MD, 60, [("Read", {"file_path": "src-tauri/src/main.rs"}),
+                     ("Bash", {"command": "ls ~/.claude/projects | head"})])
+    user("so if I delete it from the old account, does the conversation go with it?", 900)
+    claude("No. The delete writes a `deleted_<id>` marker next to the record — a millisecond "
+           "timestamp, 13 bytes. The transcript in `~/.claude/projects/` is untouched, which is "
+           "why **Restore** can bring the chat back later, into whichever account you want.", 960)
+    user("and what happens if Claude is open while I do it?", 1800)
+    claude("The write is refused. Claude reconciles its own store on a timer, so a change made "
+           "underneath it can be silently reverted. Ferry checks first and tells you in the title "
+           "bar when editing is off.\n\n- quit Claude\n- the lock clears on its own\n- every "
+           "mutation is snapshotted into `~/.ferry/snapshots/` first", 1860,
+           [("Grep", {"pattern": "app_running"})])
+    for i in range(6):
+        user(f"walk me through step {i + 1}", 2400 + i * 700)
+        claude(f"Step {i + 1} — the record is read, the account-scoped connector settings are "
+               f"stripped, and the file is written into the destination scope. Nothing else on "
+               f"disk changes.", 2460 + i * 700)
+    return "\n".join(lines) + "\n"
+
+def demo_setup():
+    """Build the synthetic tree and point every root at it."""
+    global CLAUDE, SESS, PROJ, CFG, IDB, VAULT, LABELS, PREFS, CURSOR, INDEX
+    global app_running, current_account, profiles
+
+    root   = tempfile.mkdtemp(prefix="ferry-demo-")
+    # Cursor's own database is the one root that is not synthetic, and a demo
+    # that showed real conversation titles would defeat the point of one.
+    CURSOR = os.path.join(root, "no-cursor-in-a-demo")
+    CLAUDE = os.path.join(root, "Claude")
+    SESS   = os.path.join(CLAUDE, "claude-code-sessions")
+    PROJ   = os.path.join(root, "dot-claude", "projects")
+    CFG    = os.path.join(CLAUDE, "config.json")
+    IDB    = os.path.join(CLAUDE, "IndexedDB")
+    VAULT  = os.path.join(root, "ferry-vault")
+    LABELS = os.path.join(VAULT, "labels.json")
+    PREFS  = os.path.join(VAULT, "prefs.json")
+    INDEX  = os.path.join(VAULT, "sessions.json")   # follows the vault
+
+    for a, o, *_ in DEMO_ACCTS:
+        os.makedirs(os.path.join(SESS, a, o), exist_ok=True)
+    downloads = os.path.join(root, "Downloads")
+    os.makedirs(downloads, exist_ok=True)
+    os.makedirs(VAULT, exist_ok=True)
+
+    for n, (idx, title, cwd, model, turns, days, pruned, conns) in enumerate(DEMO_CHATS):
+        acct, org = DEMO_ACCTS[idx][0], DEMO_ACCTS[idx][1]
+        cli = f"{n + 1:08x}-4c7a-4f1b-9d2e-{n + 1:012x}"
+        last, made = _demo_ms(days), _demo_ms(days + 2)
+        rec = {"sessionId": f"local_{cli}", "cliSessionId": cli, "title": title,
+               "cwd": cwd, "model": model, "createdAt": made, "lastActivityAt": last,
+               "completedTurns": turns, "isArchived": False,
+               "remoteMcpServersConfig": [{"name": c} for c in conns]}
+        with open(os.path.join(SESS, acct, org, f"local_{cli}.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(rec, fh, indent=1)
+        if not pruned:                      # a pruned chat keeps its record, loses its transcript
+            d = os.path.join(PROJ, enc_cwd(cwd))
+            os.makedirs(os.path.join(d, cli, "subagents"), exist_ok=True)
+            with open(os.path.join(d, f"{cli}.jsonl"), "w", encoding="utf-8") as fh:
+                fh.write(_demo_transcript(title, model, turns, last))
+            for s in range(2 if n == 0 else 0):
+                with open(os.path.join(d, cli, "subagents", f"sub-{s}.jsonl"), "w",
+                          encoding="utf-8") as fh:
+                    fh.write(_demo_transcript(title, model, 4, last))
+
+    # A deleted chat: only a tombstone survives in the account, but the archive
+    # still holds the record — which is the whole point of Restore.
+    tomb  = f"{9:08x}-4c7a-4f1b-9d2e-{9:012x}"
+    acct0, org0 = DEMO_ACCTS[0][0], DEMO_ACCTS[0][1]
+    with open(os.path.join(SESS, acct0, org0, f"deleted_{tomb}"), "w", encoding="utf-8") as fh:
+        fh.write(str(_demo_ms(9)))
+    gone = _demo_ms(11)
+    rec = {"sessionId": f"local_{tomb}", "cliSessionId": tomb,
+           "title": "Rewrite the billing cron", "cwd": "/Users/dev/code/ledger",
+           "model": "opus-5", "createdAt": _demo_ms(13), "lastActivityAt": gone,
+           "completedTurns": 46, "isArchived": False, "remoteMcpServersConfig": []}
+    arch = os.path.join(VAULT, "chats", "20260830-091200", acct0)
+    os.makedirs(arch, exist_ok=True)
+    with open(os.path.join(arch, f"local_{tomb}.json"), "w", encoding="utf-8") as fh:
+        json.dump(rec, fh, indent=1)
+    d = os.path.join(PROJ, enc_cwd(rec["cwd"]))
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, f"{tomb}.jsonl"), "w", encoding="utf-8") as fh:
+        fh.write(_demo_transcript(rec["title"], rec["model"], 46, gone))
+
+    json.dump({"lastKnownAccountUuid": DEMO_ACCTS[0][0]}, open(CFG, "w"))
+    json.dump({a: nick for a, _o, _e, _n, nick in DEMO_ACCTS if nick}, open(LABELS, "w"))
+    json.dump({"lastExportDir": downloads}, open(PREFS, "w"))
+
+    prof = {a: {"email": e, "name": n} for a, _o, e, n, _l in DEMO_ACCTS if e}
+    app_running     = lambda: False
+    current_account = lambda: DEMO_ACCTS[0][0]
+    profiles        = lambda: prof
+    return root
 
 def cmd_import(query, who):
     """Add a CLI or VS Code chat to an account. The chat is named by title or
@@ -1225,5 +1401,8 @@ if __name__ == "__main__":
     elif a=="cursor-import":
         if len(sys.argv) < 4: print("usage: ferry-cli.py cursor-import <text|id> <account>")
         else: cmd_cursor_import(sys.argv[2], sys.argv[3])
-    elif a=="ui":    cmd_ui()
+    elif a=="ui":
+        if "--demo" in sys.argv:
+            print(f"demo data -> {demo_setup()}")
+        cmd_ui()
     else: print(__doc__)
