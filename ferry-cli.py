@@ -7,6 +7,8 @@
   ./ferry-cli.py export <text|id> [md|txt|json]   save a chat to ~/Downloads
   ./ferry-cli.py import <text|id> <account>       add a CLI or VS Code chat
                                                   to an account
+  ./ferry-cli.py folder <text|id> <path>          point a chat at the folder
+                                                  it belongs to
 
 Chats started in the CLI or in VS Code have no per-account record, so Claude
 lists them nowhere. "list" shows them under the accounts; "import" gives one a
@@ -526,6 +528,52 @@ def op_import(path, acct, org, force=False):
     return {"ok": True, "wrote": dst, "id": rid,
             "title": info["title"], "turns": info["turns"]}
 
+def is_scratch(cwd):
+    """A chat started without picking a folder runs in a workspace the app makes
+    for it, and shows in Claude as having no folder at all."""
+    return (not cwd) or "scratch-workspaces" in cwd.lower()
+
+def relink(src, dst):
+    """Put one transcript under a second name so it can be found from another
+    folder too. A hard link, not a copy: one file, two names, not a byte
+    duplicated, and the folder it came from keeps working. Only a volume that
+    refuses links falls back to copying. Returns (linked, copied)."""
+    if os.path.exists(dst) or not os.path.exists(src): return (0, 0)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    try: os.link(src, dst); return (1, 0)
+    except Exception: pass
+    try: shutil.copy2(src, dst); return (0, 1)
+    except Exception: return (0, 0)
+
+def op_set_folder(path, folder, force=False):
+    """Point a chat at a folder. Its cwd is two things at once: the folder Claude
+    names in its header and resumes in, and where the conversation is looked up.
+    So changing only the cwd would show the new folder and lose the conversation
+    with it - every transcript has to be findable under the new name too."""
+    guard(force); owned(path)
+    rec = read_rec(path)
+    if not rec: raise RuntimeError("chat unreadable")
+    was    = rec.get("cwd") or ""
+    folder = (folder or "").strip()
+    if not folder: raise RuntimeError("say which folder to point it at")
+    folder = os.path.abspath(folder)
+    if not os.path.isdir(folder): raise RuntimeError(f"no such folder: {folder}")
+    if folder == was: return {"ok": True, "unchanged": True, "cwd": folder}
+
+    dst_dir = project_dir(folder)
+    os.makedirs(dst_dir, exist_ok=True)
+    linked = copied = 0
+    for t in transcripts_for(rec):
+        l, c = relink(t["path"], f"{dst_dir}/{t['id']}.jsonl")
+        linked += l; copied += c
+        for s in glob.glob(f"{os.path.dirname(t['path'])}/{t['id']}/subagents/*.jsonl"):
+            l, c = relink(s, f"{dst_dir}/{t['id']}/subagents/{os.path.basename(s)}")
+            linked += l; copied += c
+    snapshot(path, "folder")
+    rec["cwd"] = folder; rec["originCwd"] = folder
+    json.dump(rec, open(path, "w", encoding="utf-8"), indent=1)
+    return {"ok": True, "cwd": folder, "was": was, "linked": linked, "copied": copied}
+
 def op_rename(path, title, force=False):
     guard(force); owned(path)
     rec = read_rec(path)
@@ -663,6 +711,8 @@ OPS = {
     "export_chat":   lambda **k: op_export(**k),
     "copy_chat":     lambda path, acct, org, mv=False, **k: op_copy(path, acct, org, move=mv),
     "import_session":lambda path, acct, org, **k: op_import(path, acct, org),
+    # the browser has no native folder panel, so the UI asks for the path itself
+    "set_folder":    lambda path, folder=None, **k: op_set_folder(path, folder),
     "rename_chat":   lambda path, title, **k: op_rename(path, title),
     "delete_chat":   lambda path, **k: op_delete(path),
     "undelete_chat": lambda acct, org, id, **k: op_undelete(acct, org, id),
@@ -854,6 +904,27 @@ def cmd_import(query, who):
     print(f"added {r['title'][:58]!r} ({r['turns']} turns) from {src['sourceName']} to {name}")
     print(f"  -> {r['wrote']}")
 
+def cmd_folder(query, folder):
+    """Point a chat at the folder it belongs to."""
+    hits = []
+    for f in glob.glob(f"{SESS}/*/*/local_*.json"):
+        rec = read_rec(f)
+        if not rec: continue
+        if query.lower() in (rec.get("title","")).lower() or query in (rec.get("sessionId") or ""):
+            hits.append((f, rec))
+    if not hits: return print(f"no chat matching {query!r}")
+    if len({r["sessionId"] for _, r in hits}) > 1:
+        print("matches more than one chat:")
+        for f, r in hits: print(f"   {r.get('title','')[:58]:60} [{r['sessionId'][6:14]}]")
+        return
+    f, rec = hits[0]
+    r = op_set_folder(f, folder)
+    if r.get("unchanged"): return print("already in that folder")
+    print(f"{rec.get('title','(untitled)')[:58]}")
+    print(f"  was: {r['was'] or '(no folder)'}")
+    print(f"  now: {r['cwd']}")
+    print(f"  transcripts: {r['linked']} linked, {r['copied']} copied")
+
 def cmd_ui():
     srv = HTTPServer(("127.0.0.1", PORT), H)
     url = f"http://127.0.0.1:{PORT}/"
@@ -870,5 +941,8 @@ if __name__ == "__main__":
     elif a=="import":
         if len(sys.argv) < 4: print("usage: ferry-cli.py import <text|id> <account>")
         else: cmd_import(sys.argv[2], sys.argv[3])
+    elif a=="folder":
+        if len(sys.argv) < 4: print("usage: ferry-cli.py folder <text|id> <path>")
+        else: cmd_folder(sys.argv[2], sys.argv[3])
     elif a=="ui":    cmd_ui()
     else: print(__doc__)

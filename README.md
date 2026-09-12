@@ -47,6 +47,7 @@ Ferry fixes both. It reads the files Claude Code already writes, lets you carry 
 | **See every account** | every Claude account you've signed into on this Mac, with its chats — even ones you're signed out of |
 | **Find CLI and VS Code chats** | sessions you ran with `claude` or in the editor that no account lists at all — read them, and add one to whichever account you like |
 | **Identify them** | email for the account you're signed into; connectors, date range and project folders for the rest. Nickname any account and it sticks |
+| **Fix a chat's folder** | a chat you started without picking one shows under **No folder** in Claude — point it at the folder it really belongs to, and Claude names it there |
 | **Read any chat** | full conversation with proper Markdown — tables, code blocks, lists, quotes — plus tool calls |
 | **Copy or move** | drag a chat onto another account, or use the Copy / Move buttons |
 | **Download** | save a whole conversation as Markdown, plain text or JSON, anywhere you choose |
@@ -85,6 +86,16 @@ Two details worth knowing:
 
 - The new record's id comes from the session's own id, so importing the same chat twice updates one record instead of making a second.
 - Only the account's environment fields are inherited, copied from a record the app itself wrote there. Connector settings are not, for the same reason they're stripped on copy.
+
+## The folder a chat belongs to
+
+Claude names a chat's folder in its header and resumes the chat there. Start one without picking a folder and it runs in a workspace the app invents for it — `…\Claude\scratch-workspaces\…` — which is why the header reads **No folder**, and why the chat is filed nowhere useful afterwards.
+
+Ferry shows that folder next to every chat and lets you set it. Pick the folder it really belongs to and Claude names it from then on.
+
+There's a subtlety worth knowing, because it's what makes this safe. A chat's folder is two things at once: the folder Claude shows, **and** where the conversation is looked up — the transcript lives under `~/.claude/projects/<encoded folder>/`. Change the folder alone and Claude would show the new one and lose the conversation with it. So Ferry also makes the transcript findable under the new folder, by **hard-linking** it: one file, two names, not a byte duplicated, and the old folder keeps working. Only a volume that refuses links falls back to a copy, and Ferry tells you which happened.
+
+Every change snapshots the record first, so setting a folder is as reversible as everything else here.
 
 ## Install
 
@@ -150,6 +161,7 @@ python3 ferry-cli.py export "auth refactor"   # save a chat, Markdown by default
 python3 ferry-cli.py export "auth refactor" json
 python3 ferry-cli.py export 1191f0ec txt      # disambiguate by session id
 python3 ferry-cli.py import 17b163e1 work@    # add a CLI chat to an account
+python3 ferry-cli.py folder "auth refactor" ~/code/api   # set a chat's folder
 python3 ferry-cli.py ui                       # serve the app UI at localhost:7777
 ```
 
@@ -186,7 +198,7 @@ The archive is yours, outside anything Claude Code manages. Once a chat is in it
 
 - **Writes are refused while the Claude app is running.** Quit Claude first; the title bar tells you when editing is off.
 - **Every change is snapshotted** into `~/.ferry/snapshots/` before it happens.
-- **Transcripts are never moved or edited.** Only the small metadata record moves. Importing a CLI or VS Code chat writes one; it never writes back into the transcript, and a chat that has no record yet cannot be renamed, moved or deleted.
+- **Transcripts are never moved or edited.** Only the small metadata record moves. Importing a CLI or VS Code chat writes one; it never writes back into the transcript, and a chat that has no record yet cannot be renamed, moved or deleted. Setting a chat's folder gives its transcript a second name by hard link — the same file, still in the folder it came from, with nothing rewritten.
 - **Connector settings are stripped on copy.** MCP connector IDs belong to the account that created them and don't resolve elsewhere.
 - **Deleting writes a tombstone**, the same marker Claude Code uses. The conversation stays on disk.
 
