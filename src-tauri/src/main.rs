@@ -107,14 +107,6 @@ fn project_dir(cwd: &str) -> String {
         let d = format!("{}/{}", root, cand);
         if Path::new(&d).is_dir() { return d; }
     }
-    // A drive letter is written either way ("C--Drive-x", "c--Drive-x"), so on a
-    // case-sensitive volume the exact name can miss a folder that is really there.
-    if let Ok(rd) = fs::read_dir(&root) {
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.eq_ignore_ascii_case(&current) { return format!("{}/{}", root, name); }
-        }
-    }
     // truncated long path: "<prefix>-<base36 hash>"
     if let Ok(rd) = fs::read_dir(&root) {
         for e in rd.flatten() {
@@ -541,6 +533,14 @@ fn source_scopes(claimed: &std::collections::HashSet<String>) -> Vec<Value> {
     out
 }
 
+/* Cursor support is Windows-only. Reading its database means bundling SQLite,
+   the one dependency here that costs anything, and none of this has been tried
+   on a Mac - so the macOS build takes neither the dependency nor the size, and
+   behaves exactly as it did before. */
+#[cfg(target_os = "windows")]
+mod cursor {
+use super::*;
+
 /* ---------- Cursor ----------
    Cursor is a separate application with a storage of its own: one SQLite file
    holding every conversation, not a folder of transcripts. A chat is a row in
@@ -613,7 +613,7 @@ fn cursor_folders() -> std::collections::BTreeMap<String, String> {
 
 /// Every Cursor conversation that has anything in it. Most headers are empty
 /// shells left behind by windows that were opened and closed.
-fn cursor_chats() -> Vec<Value> {
+pub fn cursor_chats() -> Vec<Value> {
     let Some(c) = cursor_open() else { return vec![] };
     let ws = cursor_folders();
     let Ok(mut st) = c.prepare("select composerId, workspaceId, createdAt, lastUpdatedAt, \
@@ -744,7 +744,7 @@ fn cursor_msg_uuid(cid: &str, i: usize) -> String {
 /// The shape is the one Claude Code appends: one JSON object a line, each
 /// linked to the one before it. entrypoint says where it really came from, so
 /// nothing later mistakes it for a session Claude Code ran itself.
-fn cursor_write_transcript(chat: &Value) -> Result<String, String> {
+pub fn cursor_write_transcript(chat: &Value) -> Result<String, String> {
     let cid = chat["id"].as_str().ok_or("no conversation id")?;
     let cwd = chat["folder"].as_str().unwrap_or("");
     if cwd.is_empty() { return Err("that Cursor chat has no folder on this machine".into()); }
@@ -774,7 +774,7 @@ fn cursor_write_transcript(chat: &Value) -> Result<String, String> {
 /// Cursor's conversations as one more source to import from. They have no
 /// transcript to point at until one is written, so they are addressed by
 /// "cursor:<conversation id>" rather than by a path.
-fn cursor_scope() -> Option<Value> {
+pub fn cursor_scope() -> Option<Value> {
     let chats = cursor_chats();
     if chats.is_empty() { return None; }
     let mut list: Vec<Value> = chats.iter().map(|c| json!({
@@ -796,7 +796,7 @@ fn cursor_scope() -> Option<Value> {
 }
 
 /// A Cursor chat read straight out of Cursor, before anything is written.
-fn cursor_detail(cid: &str) -> Result<Value, String> {
+pub fn cursor_detail(cid: &str) -> Result<Value, String> {
     let chat = cursor_chats().into_iter()
         .find(|c| c["id"].as_str() == Some(cid))
         .ok_or("no such Cursor chat")?;
@@ -814,6 +814,26 @@ fn cursor_detail(cid: &str) -> Result<Value, String> {
     });
     Ok(json!({ "rec": rec, "files": [], "source": "cursor", "sourceName": "Cursor",
                "bytes": bytes, "subs": 0, "msgs": msgs }))
+}
+
+}   // mod cursor
+
+#[cfg(target_os = "windows")]
+use cursor::{cursor_chats, cursor_detail, cursor_scope, cursor_write_transcript};
+
+/* Everywhere else there is no Cursor to read, and the rest of Ferry carries on
+   as though it had never been asked. */
+#[cfg(not(target_os = "windows"))]
+fn cursor_scope() -> Option<Value> { None }
+#[cfg(not(target_os = "windows"))]
+fn cursor_chats() -> Vec<Value> { vec![] }
+#[cfg(not(target_os = "windows"))]
+fn cursor_detail(_cid: &str) -> Result<Value, String> {
+    Err("Cursor chats are only read on Windows".into())
+}
+#[cfg(not(target_os = "windows"))]
+fn cursor_write_transcript(_chat: &Value) -> Result<String, String> {
+    Err("Cursor chats are only read on Windows".into())
 }
 
 /// Every <account>/<org> scope under the sessions root, found by walking the
