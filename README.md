@@ -162,6 +162,8 @@ python3 ferry-cli.py export "auth refactor" json
 python3 ferry-cli.py export 1191f0ec txt      # disambiguate by session id
 python3 ferry-cli.py import 17b163e1 work@    # add a CLI chat to an account
 python3 ferry-cli.py folder "auth refactor" ~/code/api   # set a chat's folder
+python3 ferry-cli.py cursor                   # Cursor's own chats
+python3 ferry-cli.py cursor-import 4191e56f work@       # convert one to Claude
 python3 ferry-cli.py ui                       # serve the app UI at localhost:7777
 ```
 
@@ -177,6 +179,26 @@ work there; the only difference is the browser can't open a native save panel, s
 straight to your chosen folder.
 
 Run `vault` from a launchd job or cron and your history is backed up nightly without opening anything.
+
+## Cursor
+
+Cursor keeps its chats nothing like Claude Code does: not a folder of transcripts but a single SQLite file — one row per conversation in `composerHeaders`, an ordered list of bubble ids beside it, and one row per message, all inside `globalStorage\state.vscdb`. So a chat can't be *moved* between them. It has to be converted, and Ferry converts **one way only**.
+
+```bash
+python3 ferry-cli.py cursor                         # what Cursor has
+python3 ferry-cli.py cursor-import 4191e56f work@   # convert one into a Claude chat
+```
+
+`cursor` lists the conversations that actually contain something — most headers are empty shells left by windows that were opened and closed — grouped by the folder each was worked in, because Cursor's workspaces map to real directories. The converted chat lands in the account you name, in that folder, and Claude reads it like any other.
+
+What survives the crossing: every prompt and reply, in order, with their timestamps, and every tool call as a line naming the tool and its path or command. What doesn't: Cursor's diffs, thinking blocks and attached code chunks have no equivalent in Claude's format. A 4,563-bubble conversation converts to 241 turns in about half a second — only a couple of hundred bubbles hold prose, and three thousand are tool calls folded into the message before them.
+
+Two deliberate limits:
+
+- **Nothing is ever written into Cursor.** Its database is opened `mode=ro` and only read. Going the other way would mean inserting rows into a live gigabyte file Cursor holds open, where one mistake costs every conversation in it.
+- **This is the one place Ferry writes a transcript** rather than only the small record beside it, because there is no transcript to point at — Cursor's conversations live in a database. The file is named after the Cursor conversation, so converting the same chat twice rewrites the one file instead of leaving a second copy.
+
+The desktop app doesn't show Cursor chats yet: reading SQLite from Rust means bundling it, and that costs about a quarter of Ferry's whole size. The CLI gets it free from Python's standard library, so it goes first.
 
 ## The archive
 
