@@ -231,6 +231,18 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 .seg button.on{color:#fff}
 .seg button:not(.on):hover{color:var(--ink)}
 .nosend{font-size:12px;color:var(--faint)}
+/* The folder a chat belongs to. Claude names it in its own header and resumes
+   the chat there; one started without a folder shows under none until it is
+   given one. A chat not yet in an account has no record to change, so its
+   folder is shown but not offered. */
+.fol{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:8px;
+ border:1px solid var(--line);background:var(--panel);color:var(--dim);font-size:12px;
+ font-weight:500;max-width:270px;transition:.13s}
+.fol span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fol:not([disabled]):hover{border-color:var(--faint);color:var(--ink);background:var(--raise)}
+.fol.none{color:var(--warn);border-color:currentColor}
+.fol[disabled]{cursor:default;opacity:.85}
+.tools .vsep{width:1px;height:22px;background:var(--line)}
 #pmenu{position:fixed;display:none;min-width:210px;background:var(--panel);border:1px solid var(--line);
  border-radius:10px;box-shadow:var(--sh);padding:4px;z-index:40}
 #pmenu.on{display:block}
@@ -539,6 +551,41 @@ function importGroup(others){
       ', so Claude lists it there. The conversation itself stays where it is.">Add to account</button></span>';
 }
 function btnImport(){const t=accts().find(x=>key(x)===tgtKey);if(t)ask(chatPath,t,"import");}
+
+/* ---------- the folder a chat belongs to ----------
+   A chat's cwd is the folder Claude names in its header and resumes in, and it
+   is also where the conversation is looked up. Setting it here does both: the
+   record points at the new folder, and the transcript is hard-linked so it is
+   found from there too. A chat started without a folder ran in a workspace the
+   app made for it, which is why Claude shows it under none. */
+const SCRATCH=/scratch-workspaces/i;
+const folderOf=p=>String(p||"").replace(/[\\/]+$/,"").split(/[\\/]/).pop()||"";
+const FOLDSVG='<svg width=12 height=12 viewBox="0 0 12 12" aria-hidden=true><path d="M1 3.3a1 1 0 0 1 1-1h2.1'+
+  'l1 1.3H10a1 1 0 0 1 1 1v4.1a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1z" fill=none stroke=currentColor '+
+  'stroke-width=1.1 stroke-linejoin=round /></svg>';
+function folderChip(r,src){
+  const p=r.cwd||"",none=!p||SCRATCH.test(p);
+  const tip=(none?"Started without a folder, so Claude shows it under none.":p)+
+    (src?"\nImport it into an account to change this.":"\nClick to point this chat at a folder.");
+  return '<button class="fol'+(none?' none':'')+'"'+(src?' disabled':' onclick=doFolder()')+
+    ' title="'+esc(tip)+'">'+FOLDSVG+'<span>'+esc(none?"No folder":folderOf(p))+'</span></button>';
+}
+// like the download: the native panel is its own wait, so no card over it
+async function doFolder(){
+  try{
+    // the app opens a native folder panel; a browser has none, so it asks
+    let args={path:chatPath};
+    if(!INAPP){const p=prompt("Folder this chat belongs to:",(curD&&curD.rec.cwd)||"");
+               if(!p) return toast("Cancelled"); args.folder=p;}
+    const r=await iv("set_folder",args);
+    if(r.cancelled) return toast("Cancelled");
+    if(r.unchanged) return toast("Already in that folder");
+    await load();
+    if(chatPath){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){drawRead(null);}}
+    toast("Folder set to "+folderOf(r.cwd)+
+      (r.copied?" · transcript copied":r.linked?" · transcript linked, not duplicated":""));
+  }catch(e){toast(String(e),true);}
+}
 function flip(mv){sendMv=mv;const s=$(".seg");s.dataset.v=mv?"move":"copy";
   s.querySelectorAll("button").forEach((b,i)=>b.classList.toggle("on",i===(mv?1:0)));
   setTimeout(()=>btnSend(mv),160);}              // let the switch land, then the card
@@ -810,8 +857,10 @@ function drawRead(d){
        // Windows: the file actions share the title's row (the details live in its
        // tooltip), and the row below is only about sending the chat
        '<div class=trow>'+ttl+'<span class="tools fops">'+fileops+'</span></div>'+
-       '<div class=tools>'+(src?importGroup(others):sendGroup(others))+'</div>'
+       '<div class=tools>'+folderChip(r,src)+'<span class=vsep></span>'+
+         (src?importGroup(others):sendGroup(others))+'</div>'
      :ttl+'<div class=meta>'+meta+'</div>'+
+       '<div class=tools>'+folderChip(r,src)+'</div>'+
        '<div class=tools>'+
        (others.length&&!src?'<select id=tgt>'+others.map(x=>'<option value="'+key(x)+'">'+esc(label(x))+'</option>').join("")+
         '</select><button class="btn p" onclick=btnSend(false)>Copy →</button>'+
