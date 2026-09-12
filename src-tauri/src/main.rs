@@ -304,6 +304,7 @@ fn source_of(entrypoint: &str) -> (&'static str, &'static str) {
         "cli"            => ("cli",     "Claude Code CLI"),
         "claude-vscode"  => ("vscode",  "VS Code"),
         "claude-desktop" => ("desktop", "Desktop, no record"),
+        "cursor"         => ("cursor",  "Cursor"),
         _                => ("other",   "Other sessions"),
     }
 }
@@ -537,6 +538,281 @@ fn source_scopes(claimed: &std::collections::HashSet<String>) -> Vec<Value> {
     out
 }
 
+/* ---------- Cursor ----------
+   Cursor is a separate application with a storage of its own: one SQLite file
+   holding every conversation, not a folder of transcripts. A chat is a row in
+   composerHeaders, an ordered list of bubble ids in composerData:<id>, and one
+   bubbleId:<chat>:<bubble> row per message. Nothing about it resembles the
+   JSONL Claude Code appends, so a chat cannot be moved between them - it has to
+   be converted, and the conversion only goes one way. Writing into Cursor's
+   database would mean inserting rows into a live file it holds open, where a
+   mistake costs every conversation in it, so Ferry never does: every read here
+   opens it read-only. */
+
+#[cfg(target_os = "windows")]
+fn cursor_dir() -> String {
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| format!("{}/AppData/Roaming", home()));
+    format!("{}\\Cursor\\User", appdata)
+}
+#[cfg(target_os = "macos")]
+fn cursor_dir() -> String { format!("{}/Library/Application Support/Cursor/User", home()) }
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn cursor_dir() -> String { format!("{}/.config/Cursor/User", home()) }
+
+fn cursor_db() -> Option<String> {
+    let p = format!("{}/globalStorage/state.vscdb", cursor_dir());
+    if Path::new(&p).exists() { Some(p) } else { None }
+}
+
+/// Read-only, and never anything else.
+fn cursor_open() -> Option<rusqlite::Connection> {
+    use rusqlite::OpenFlags;
+    rusqlite::Connection::open_with_flags(cursor_db()?,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI).ok()
+}
+
+/// A cell, whether Cursor wrote it as text or as a blob.
+fn cell(row: &rusqlite::Row, i: usize) -> String {
+    row.get::<_, String>(i).unwrap_or_else(|_| {
+        row.get::<_, Vec<u8>>(i).map(|b| String::from_utf8_lossy(&b).to_string())
+           .unwrap_or_default()
+    })
+}
+
+/// Which folder each Cursor workspace is: workspace.json names it as a URI.
+fn cursor_folders() -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(g) = glob::glob(&format!("{}/workspaceStorage/*/workspace.json", cursor_dir()))
+        else { return out };
+    for f in g.flatten() {
+        let Some(v) = read_json(&f.to_string_lossy()) else { continue };
+        let Some(uri) = v["folder"].as_str() else { continue };
+        let Some(rest) = uri.strip_prefix("file:///") else { continue };
+        // percent-decoding, for the spaces in "c:/Drive/Local LLM"
+        let mut p = String::new();
+        let b = rest.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'%' && i + 2 < b.len() {
+                if let Ok(n) = u8::from_str_radix(&rest[i+1..i+3], 16) {
+                    p.push(n as char); i += 3; continue;
+                }
+            }
+            p.push(b[i] as char); i += 1;
+        }
+        if cfg!(target_os = "windows") { p = p.replace('/', "\\"); } else { p.insert(0, '/'); }
+        if let Some(d) = f.parent().and_then(|d| d.file_name()) {
+            out.insert(d.to_string_lossy().to_string(), p);
+        }
+    }
+    out
+}
+
+/// Every Cursor conversation that has anything in it. Most headers are empty
+/// shells left behind by windows that were opened and closed.
+fn cursor_chats() -> Vec<Value> {
+    let Some(c) = cursor_open() else { return vec![] };
+    let ws = cursor_folders();
+    let Ok(mut st) = c.prepare("select composerId, workspaceId, createdAt, lastUpdatedAt, \
+                                isArchived, isSubagent, value from composerHeaders \
+                                order by lastUpdatedAt desc") else { return vec![] };
+    let Ok(rows) = st.query_map([], |r| Ok((
+        cell(r, 0), cell(r, 1),
+        r.get::<_, Option<i64>>(2).unwrap_or(None).unwrap_or(0),
+        r.get::<_, Option<i64>>(3).unwrap_or(None).unwrap_or(0),
+        r.get::<_, Option<i64>>(4).unwrap_or(None).unwrap_or(0),
+        r.get::<_, Option<i64>>(5).unwrap_or(None).unwrap_or(0),
+        cell(r, 6),
+    ))) else { return vec![] };
+
+    let mut out = vec![];
+    for row in rows.flatten() {
+        let (cid, wid, created, last, arch, sub, val) = row;
+        if sub != 0 { continue; }                       // a subagent's side conversation
+        let Some(data) = cursor_get(&c, &format!("composerData:{}", cid)) else { continue };
+        let Some(d) = serde_json::from_str::<Value>(&data).ok() else { continue };
+        let heads = d["fullConversationHeadersOnly"].as_array().cloned().unwrap_or_default();
+        if heads.is_empty() { continue; }
+        // Most bubbles are tool calls with nothing to read. The header of each
+        // says whether it has text, so how much was actually said can be counted
+        // without opening three thousand rows.
+        let n = heads.iter().filter(|h| h["grouping"]["hasText"].as_bool().unwrap_or(false)).count();
+        let n = if n > 0 { n } else { heads.len() };
+        let name = serde_json::from_str::<Value>(&val).ok()
+            .and_then(|v| v["name"].as_str().map(String::from))
+            .filter(|s| !s.is_empty()).unwrap_or_else(|| "(unnamed)".into());
+        out.push(json!({
+            "id": cid, "title": name, "folder": ws.get(&wid).cloned().unwrap_or_default(),
+            "created": created, "last": last, "bubbles": n, "archived": arch != 0
+        }));
+    }
+    out
+}
+
+fn cursor_get(c: &rusqlite::Connection, key: &str) -> Option<String> {
+    c.query_row("select value from cursorDiskKV where key=?1", [key], |r| Ok(cell(r, 0))).ok()
+}
+
+/// One tool call, said in a line. Cursor keeps the arguments as raw JSON; the
+/// path or command in them is the part worth reading. Its own call ids say
+/// nothing about what the tool did and carry newlines of their own.
+fn cursor_tool_line(t: &Value) -> String {
+    let name = t["name"].as_str().or(t["tool"].as_str()).unwrap_or("tool");
+    let mut hint = String::new();
+    if let Ok(a) = serde_json::from_str::<Value>(t["rawArgs"].as_str().unwrap_or("{}")) {
+        for k in ["path", "target_file", "file", "command", "query", "pattern",
+                  "globPattern", "targetDirectory", "toolName", "explanation"] {
+            if let Some(v) = a[k].as_str() { if !v.is_empty() { hint = v.into(); break; } }
+        }
+        if hint.is_empty() {
+            if let Some(o) = a.as_object() {
+                let rest: serde_json::Map<String, Value> = o.iter()
+                    .filter(|(k, _)| !matches!(k.as_str(),
+                        "toolCallId" | "modelCallId" | "toolIndex" | "toolCallBinary"))
+                    .map(|(k, v)| (k.clone(), v.clone())).collect();
+                if !rest.is_empty() { hint = Value::Object(rest).to_string(); }
+            }
+        }
+    }
+    let hint: String = hint.split_whitespace().collect::<Vec<_>>().join(" ")
+                           .chars().take(120).collect();
+    if hint.is_empty() { format!("-> {}()", name) } else { format!("-> {}({})", name, hint) }
+}
+
+/// One Cursor conversation as plain turns, oldest first.
+///
+/// Most bubbles carry no prose at all - in a 4,563 bubble chat only a couple of
+/// hundred do, and three thousand are tool calls. Dropping those would throw
+/// away what the conversation actually did, so a run of them is folded into the
+/// message before it as one line each. They are written as text, not as
+/// tool_use blocks: a tool_use has to be answered by a tool_result, and there
+/// is nothing on this side to answer it with.
+fn cursor_messages(cid: &str) -> Vec<Value> {
+    let Some(c) = cursor_open() else { return vec![] };
+    let Some(data) = cursor_get(&c, &format!("composerData:{}", cid)) else { return vec![] };
+    let Ok(d) = serde_json::from_str::<Value>(&data) else { return vec![] };
+    let heads = d["fullConversationHeadersOnly"].as_array().cloned().unwrap_or_default();
+
+    let mut out: Vec<Value> = vec![];
+    let mut pending: Vec<String> = vec![];
+    for h in &heads {
+        let Some(bid) = h["bubbleId"].as_str() else { continue };
+        let Some(raw) = cursor_get(&c, &format!("bubbleId:{}:{}", cid, bid)) else { continue };
+        let Ok(b) = serde_json::from_str::<Value>(&raw) else { continue };
+        let ts = h["createdAt"].as_str().or(b["createdAt"].as_str()).unwrap_or("").to_string();
+        let text = b["text"].as_str().unwrap_or("").trim().to_string();
+        let role = if b["type"].as_i64() == Some(1) { "user" } else { "assistant" };
+        if !text.is_empty() {
+            let mut text = text;
+            if role == "user" {
+                if !pending.is_empty() {
+                    out.push(json!({ "role": "assistant", "text": pending.join("\n"), "t": ts }));
+                    pending.clear();
+                }
+            } else if !pending.is_empty() {
+                text = format!("{}\n\n{}", pending.join("\n"), text);
+                pending.clear();
+            }
+            out.push(json!({ "role": role, "text": text, "t": ts }));
+        } else if !b["toolFormerData"].is_null() {
+            pending.push(cursor_tool_line(&b["toolFormerData"]));
+        }
+    }
+    if !pending.is_empty() {
+        let ts = out.last().map(|m| m["t"].clone()).unwrap_or(Value::Null);
+        out.push(json!({ "role": "assistant", "text": pending.join("\n"), "t": ts }));
+    }
+    out
+}
+
+/// Message uuids that keep a uuid's shape without a uuid crate: the
+/// conversation's own id with its tail replaced, so every line is distinct and
+/// the chain from one to the next can be followed.
+fn cursor_msg_uuid(cid: &str, i: usize) -> String {
+    let mut s = cid.to_string();
+    if s.len() >= 8 {
+        let n = s.len();
+        s.replace_range(n - 8..n, &format!("{:08x}", i as u32));
+    }
+    s
+}
+
+/// A Claude Code transcript, written from turns that came from somewhere else.
+/// The shape is the one Claude Code appends: one JSON object a line, each
+/// linked to the one before it. entrypoint says where it really came from, so
+/// nothing later mistakes it for a session Claude Code ran itself.
+fn cursor_write_transcript(chat: &Value) -> Result<String, String> {
+    let cid = chat["id"].as_str().ok_or("no conversation id")?;
+    let cwd = chat["folder"].as_str().unwrap_or("");
+    if cwd.is_empty() { return Err("that Cursor chat has no folder on this machine".into()); }
+    let msgs = cursor_messages(cid);
+    if msgs.is_empty() { return Err("that Cursor chat has nothing readable in it".into()); }
+
+    let dir = project_dir(cwd);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = format!("{}/{}.jsonl", dir, cid);
+    let mut body = String::new();
+    let mut prev = Value::Null;
+    for (i, m) in msgs.iter().enumerate() {
+        let u = cursor_msg_uuid(cid, i);
+        body.push_str(&json!({
+            "parentUuid": prev, "isSidechain": false, "userType": "external",
+            "type": m["role"], "message": { "role": m["role"], "content": m["text"] },
+            "uuid": u, "timestamp": m["t"], "cwd": cwd, "sessionId": cid,
+            "gitBranch": "", "entrypoint": "cursor"
+        }).to_string());
+        body.push('\n');
+        prev = json!(u);
+    }
+    fs::write(&path, body).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// Cursor's conversations as one more source to import from. They have no
+/// transcript to point at until one is written, so they are addressed by
+/// "cursor:<conversation id>" rather than by a path.
+fn cursor_scope() -> Option<Value> {
+    let chats = cursor_chats();
+    if chats.is_empty() { return None; }
+    let mut list: Vec<Value> = chats.iter().map(|c| json!({
+        "id": format!("local_{}", c["id"].as_str().unwrap_or("")),
+        "sid": c["id"], "title": c["title"], "cwd": c["folder"],
+        "model": "", "created": c["created"], "last": c["last"],
+        "turns": c["bubbles"], "archived": c["archived"], "forkedFrom": Value::Null,
+        "files": 1, "subs": 0, "bytes": 0, "missing": 0, "absent": 0,
+        "branch": "", "version": "", "source": "cursor",
+        "path": format!("cursor:{}", c["id"].as_str().unwrap_or(""))
+    })).collect();
+    list.sort_by_key(|c| std::cmp::Reverse(c["last"].as_u64().unwrap_or(0)));
+    Some(json!({
+        "acct": "source:cursor", "org": "source", "kind": "source",
+        "source": "cursor", "sourceName": "Cursor",
+        "chats": list, "deleted": [], "connectors": {},
+        "isCurrent": false, "label": "", "profile": Value::Null
+    }))
+}
+
+/// A Cursor chat read straight out of Cursor, before anything is written.
+fn cursor_detail(cid: &str) -> Result<Value, String> {
+    let chat = cursor_chats().into_iter()
+        .find(|c| c["id"].as_str() == Some(cid))
+        .ok_or("no such Cursor chat")?;
+    let msgs: Vec<Value> = cursor_messages(cid).iter().map(|m| json!({
+        "role": m["role"], "t": m["t"].as_str().unwrap_or("").chars().take(16).collect::<String>(),
+        "text": m["text"], "tools": []
+    })).collect();
+    let bytes: u64 = msgs.iter().map(|m| m["text"].as_str().unwrap_or("").len() as u64).sum();
+    let rec = json!({
+        "sessionId": Value::Null, "cliSessionId": cid,
+        "title": chat["title"], "cwd": chat["folder"], "model": "",
+        "createdAt": chat["created"], "lastActivityAt": chat["last"],
+        "completedTurns": msgs.len(), "isArchived": chat["archived"],
+        "source": "cursor", "sourceName": "Cursor"
+    });
+    Ok(json!({ "rec": rec, "files": [], "source": "cursor", "sourceName": "Cursor",
+               "bytes": bytes, "subs": 0, "msgs": msgs }))
+}
+
 /// Every <account>/<org> scope under the sessions root, found by walking the
 /// directory rather than by pattern matching. Returns (account, org, dir).
 fn scopes_on_disk() -> Vec<(String, String, PathBuf)> {
@@ -702,6 +978,7 @@ fn scan() -> Value {
     // CLI and VS Code sessions come after the accounts: they are where chats are
     // imported from, not an account you can send one to.
     list.extend(source_scopes(&claimed));
+    if let Some(c) = cursor_scope() { list.push(c); }
     json!({ "scopes": list, "current": cur, "appRunning": app_running(),
             "vault": vault(), "exportDir": last_export_dir(),
             "paths": { "sessions": sess(), "projects": proj(), "home": home() },
@@ -785,6 +1062,11 @@ fn source_parts(path: &str) -> Result<(Value, Vec<Value>), String> {
 /// The record and transcripts of a chat, whether an account owns it or it is
 /// still only a session on disk.
 fn chat_parts(path: &str) -> Result<(Value, Vec<Value>), String> {
+    if let Some(cid) = path.strip_prefix("cursor:") {
+        // nothing on disk to read yet: the conversation is still in Cursor
+        let d = cursor_detail(cid)?;
+        return Ok((d["rec"].clone(), vec![]));
+    }
     if under(&proj(), path) && path.ends_with(".jsonl") { return source_parts(path); }
     if !under(&sess(), path) {
         return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
@@ -797,6 +1079,7 @@ fn chat_parts(path: &str) -> Result<(Value, Vec<Value>), String> {
 #[cfg_attr(target_os = "windows", tauri::command(async))]
 #[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn chat_detail(path: String) -> Result<Value, String> {
+    if let Some(cid) = path.strip_prefix("cursor:") { return cursor_detail(cid); }
     let (rec, tr) = chat_parts(&path)?;
     let msgs = collect_msgs(&tr, 800, 24000);
     let bytes: u64 = tr.iter().map(|t| t["size"].as_u64().unwrap_or(0)).sum();
@@ -1038,13 +1321,45 @@ fn template_record(dir: &str) -> Option<Value> {
 #[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn import_session(path: String, acct: String, org: String) -> Result<Value, String> {
     guard()?;
-    if !(under(&proj(), &path) && path.ends_with(".jsonl")) {
+    // A Cursor chat has no transcript to point at - its conversation lives in
+    // Cursor's database - so one is written first, and from there it is an
+    // ordinary import. This is the only place Ferry writes a transcript.
+    let path = match path.strip_prefix("cursor:") {
+        None => path,
+        Some(cid) => {
+            let chat = cursor_chats().into_iter()
+                .find(|c| c["id"].as_str() == Some(cid)).ok_or("no such Cursor chat")?;
+            let p = cursor_write_transcript(&chat)?;
+            let out = import_session_at(&p, &acct, &org)?;
+            // Cursor already named the conversation; keep its name over the
+            // first line of the first prompt
+            if let Some(t) = chat["title"].as_str() {
+                if t != "(unnamed)" {
+                    if let Some(w) = out["wrote"].as_str() {
+                        if let Some(mut r) = read_json(w) {
+                            r["title"] = json!(t);
+                            let _ = fs::write(w, serde_json::to_string_pretty(&r).unwrap());
+                        }
+                    }
+                }
+            }
+            return Ok(out);
+        }
+    };
+    import_session_at(&path, &acct, &org)
+}
+
+/// The import itself, once there is a transcript to import. Kept apart from the
+/// command so a Cursor chat, whose transcript has only just been written, takes
+/// the very same path as one that was always there.
+fn import_session_at(path: &str, acct: &str, org: &str) -> Result<Value, String> {
+    if !(under(&proj(), path) && path.ends_with(".jsonl")) {
         return Err(format!("path is outside the projects folder\n  path: {}\n  root: {}", path, proj()));
     }
-    let info = read_session(&path).ok_or("transcript unreadable")?;
+    let info = read_session(path).ok_or("transcript unreadable")?;
     let cwd = info["cwd"].as_str().unwrap_or("");
     if cwd.is_empty() { return Err("this transcript does not say which folder it ran in".into()); }
-    let sid = Path::new(&path).file_stem().ok_or("no session id")?.to_string_lossy().to_string();
+    let sid = Path::new(path).file_stem().ok_or("no session id")?.to_string_lossy().to_string();
     let dst_dir = format!("{}/{}/{}", sess(), acct, org);
     if !Path::new(&dst_dir).is_dir() { return Err("that account has no folder on this machine".into()); }
 
