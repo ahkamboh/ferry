@@ -991,11 +991,16 @@ def cursor_chats():
         except Exception: continue
         heads = data.get("fullConversationHeadersOnly") or []
         if not heads: continue
+        # most bubbles are tool calls with nothing to read; each header says
+        # whether its bubble has text, so how much was said can be counted
+        # without opening three thousand rows
+        said = sum(1 for h in heads if (h.get("grouping") or {}).get("hasText")) or len(heads)
         try: name = (json.loads(val) or {}).get("name") or ""
         except Exception: name = ""
         out.append({"id": cid, "title": name or "(unnamed)",
                     "folder": ws.get(str(wid), ""), "created": created,
-                    "last": updated, "archived": bool(arch), "bubbles": len(heads)})
+                    "last": updated, "archived": bool(arch),
+                    "bubbles": len(heads), "said": said})
     return out
 
 def _tool_line(t):
@@ -1006,10 +1011,17 @@ def _tool_line(t):
     try:
         a = json.loads(t.get("rawArgs") or "{}")
         if isinstance(a, dict):
-            for k in ("path", "target_file", "file", "command", "query", "pattern", "explanation"):
+            for k in ("path", "target_file", "file", "command", "query", "pattern",
+                      "globPattern", "targetDirectory", "toolName", "explanation"):
                 if a.get(k): hint = str(a[k]); break
-            if not hint and a: hint = json.dumps(a)[:120]
+            if not hint:
+                # whatever is left, minus Cursor's own bookkeeping - call ids say
+                # nothing about what the tool did and carry newlines of their own
+                rest = {k: v for k, v in a.items()
+                        if k not in ("toolCallId", "modelCallId", "toolIndex", "toolCallBinary")}
+                if rest: hint = json.dumps(rest)
     except Exception: pass
+    hint = " ".join(str(hint).split())            # a tool call is one line
     return f"-> {name}({hint[:120]})" if hint else f"-> {name}()"
 
 def cursor_messages(cid):
@@ -1113,8 +1125,8 @@ def cmd_cursor():
     for folder, xs in by.items():
         print(folder)
         for x in xs:
-            print("  %-9s %-40s %5d bubbles  %s%s" %
-                  (x["id"][:8], x["title"][:40], x["bubbles"], ts(x["last"]),
+            print("  %-9s %-40s %4d turns of %5d bubbles  %s%s" %
+                  (x["id"][:8], x["title"][:40], x["said"], x["bubbles"], ts(x["last"]),
                    "  (archived)" if x["archived"] else ""))
         print()
     print("add one to an account with:  ferry-cli.py cursor-import <id|text> <account>")
