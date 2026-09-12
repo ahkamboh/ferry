@@ -303,6 +303,9 @@ fn source_of(entrypoint: &str) -> (&'static str, &'static str) {
     match entrypoint {
         "cli"            => ("cli",     "Claude Code CLI"),
         "claude-vscode"  => ("vscode",  "VS Code"),
+        // sessions something ran through the Agent SDK rather than a person
+        // typing: they read like chats but were nobody's conversation
+        "sdk-cli" | "sdk" => ("sdk",    "Agent SDK"),
         "claude-desktop" => ("desktop", "Desktop, no record"),
         "cursor"         => ("cursor",  "Cursor"),
         _                => ("other",   "Other sessions"),
