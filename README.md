@@ -11,14 +11,14 @@
 
 **Copy or move a chat from a Claude Code account you're signed out of into the one you're using now.**
 
-Claude picks up the old context instead of you explaining the project again — all on your machine. A 4 MB native app for macOS and Windows, plus a zero-dependency CLI.
+Claude picks up the old context instead of you explaining the project again — all on your machine. A 5 MB native app for macOS and Windows, plus a zero-dependency CLI.
 
 [![Download](https://img.shields.io/badge/%E2%86%93%20Download-macOS%20%7C%20Windows-d97757?style=for-the-badge)](https://github.com/ahkamboh/ferry/releases/latest)
 [![Website](https://img.shields.io/badge/Website-ahkamboh.github.io%2Fferry-1f1e1d?style=for-the-badge)](https://ahkamboh.github.io/ferry/)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-d97757.svg)](LICENSE)
 ![Platform: macOS and Windows](https://img.shields.io/badge/platform-macOS%2011%2B%20%7C%20Windows%2010%2B-1f1e1d)
-![Size: 4 MB](https://img.shields.io/badge/app-4%20MB-1f1e1d)
+![Size: 5 MB](https://img.shields.io/badge/app-5%20MB-1f1e1d)
 ![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202%20%2B%20Rust-1f1e1d)
 
 <img src="assets/screenshot.png" width="920" alt="Ferry showing accounts, chats and a rendered conversation">
@@ -45,6 +45,7 @@ Ferry fixes both. It reads the files Claude Code already writes, lets you carry 
 | | |
 |---|---|
 | **See every account** | every Claude account you've signed into on this Mac, with its chats — even ones you're signed out of |
+| **Find Cursor chats** | conversations from Cursor, converted into Claude chats in the folder they were worked in |
 | **Find CLI and VS Code chats** | sessions you ran with `claude` or in the editor that no account lists at all — read them, and add one to whichever account you like |
 | **Identify them** | email for the account you're signed into; connectors, date range and project folders for the rest. Nickname any account and it sticks |
 | **Fix a chat's folder** | a chat you started without picking one shows under **No folder** in Claude — point it at the folder it really belongs to, and Claude names it there |
@@ -78,6 +79,7 @@ Ferry finds them. Each transcript states which surface wrote it, so they arrive 
 NOT IN AN ACCOUNT
   >_  Claude Code CLI      6 chats · no account yet
   {}  VS Code              7 chats · no account yet
+  ⌁   Cursor              11 chats · no account yet
 ```
 
 Open one and it reads like any other chat. **Add to account** then writes the record it never had, and from that moment Claude lists it, and Ferry can copy, move, rename, archive and delete it like the rest. Nothing is written back into the transcript, so the session stays resumable from where it came.
@@ -198,7 +200,7 @@ Two deliberate limits:
 - **Nothing is ever written into Cursor.** Its database is opened `mode=ro` and only read. Going the other way would mean inserting rows into a live gigabyte file Cursor holds open, where one mistake costs every conversation in it.
 - **This is the one place Ferry writes a transcript** rather than only the small record beside it, because there is no transcript to point at — Cursor's conversations live in a database. The file is named after the Cursor conversation, so converting the same chat twice rewrites the one file instead of leaving a second copy.
 
-The desktop app doesn't show Cursor chats yet: reading SQLite from Rust means bundling it, and that costs about a quarter of Ferry's whole size. The CLI gets it free from Python's standard library, so it goes first.
+The app shows Cursor beside the CLI and VS Code, so a conversation drags onto an account like any other chat. Reading SQLite from Rust means bundling it, which is what took Ferry from 4.3 MB to 5.3 MB — the one dependency here that costs anything. The CLI gets it free from Python's standard library.
 
 ## The archive
 
