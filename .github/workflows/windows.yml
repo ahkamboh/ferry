@@ -1,8 +1,16 @@
 name: Windows build
 
-# Manual only — macOS is the supported target; this exists to produce a test build.
+# Builds Ferry.exe, the NSIS setup, and the MSI on a Windows runner, then
+# uploads them to the existing GitHub release whose tag matches the version
+# in tauri.conf.json (v1.5.4 today). Does not create tags.
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -10,10 +18,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Show toolchain
         run: |
           rustc --version
           cargo --version
+          node --version
 
       # The Rust tests run here and not only on the Mac: the lockfile guard is
       # Windows-only code, and so is the test that holds a lockfile open the way
@@ -29,14 +44,41 @@ jobs:
       - name: Stage
         shell: pwsh
         run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          if ($version -ne $cargoVersion) {
+            throw "tauri.conf.json version $version != Cargo.toml version $cargoVersion"
+          }
+          Write-Host "version=$version sha=$env:GITHUB_SHA"
           New-Item -ItemType Directory -Force -Path dist-win | Out-Null
-          Copy-Item src-tauri/target/release/ferry.exe dist-win/Ferry.exe
-          Copy-Item src-tauri/target/release/bundle/nsis/*-setup.exe dist-win/
-          Copy-Item src-tauri/target/release/bundle/msi/*.msi dist-win/
-          Get-ChildItem dist-win | Select-Object Name,Length
+          Copy-Item src-tauri/target/release/ferry.exe "dist-win/Ferry-$version-windows-x64.exe"
+          $setup = Get-Item src-tauri/target/release/bundle/nsis/*-setup.exe
+          if (-not $setup) { throw "NSIS setup exe missing" }
+          Copy-Item $setup.FullName "dist-win/Ferry-$version-windows-x64-setup.exe"
+          $msi = Get-Item src-tauri/target/release/bundle/msi/*.msi
+          if (-not $msi) { throw "MSI missing" }
+          Copy-Item $msi.FullName "dist-win/Ferry-$version-windows-x64.msi"
+          $exe = Get-Item "dist-win/Ferry-$version-windows-x64.exe"
+          Write-Host "ProductVersion=$($exe.VersionInfo.ProductVersion) FileVersion=$($exe.VersionInfo.FileVersion)"
+          Get-ChildItem dist-win | Select-Object Name, Length
+          Add-Content -Path $env:GITHUB_ENV -Value "VERSION=$version"
 
       - uses: actions/upload-artifact@v4
         with:
           name: Ferry-windows-x64
           path: dist-win/*
           if-no-files-found: error
+
+      - name: Publish to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = "v$env:VERSION"
+          gh release view $tag
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "No release $tag; leaving Actions artifacts only"
+            exit 0
+          }
+          gh release upload $tag (Get-ChildItem dist-win -File).FullName --clobber
+          Write-Host "Uploaded to $tag from $env:GITHUB_SHA"
