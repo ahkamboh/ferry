@@ -34,19 +34,7 @@ fn claude_dir() -> String { format!("{}/Library/Application Support/Claude", hom
 /// take the one written to most recently.
 #[cfg(target_os = "windows")]
 fn claude_dir() -> String {
-    let appdata = std::env::var("APPDATA")
-        .unwrap_or_else(|_| format!("{}/AppData/Roaming", home()));
-    let local = std::env::var("LOCALAPPDATA")
-        .unwrap_or_else(|_| format!("{}/AppData/Local", home()));
-    let mut cands = vec![format!("{}\\Claude", appdata)];
-    if let Ok(rd) = fs::read_dir(format!("{}\\Packages", local)) {
-        let mut pkgs: Vec<String> = rd.flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with("Claude_"))
-            .map(|e| format!("{}\\LocalCache\\Roaming\\Claude", e.path().display()))
-            .collect();
-        pkgs.sort();
-        cands.extend(pkgs);
-    }
+    let cands = claude_dirs();
     let newest = |c: &String| -> Option<SystemTime> {
         walkdir::WalkDir::new(format!("{}\\claude-code-sessions", c)).max_depth(3)
             .into_iter().filter_map(|e| e.ok())
@@ -131,17 +119,96 @@ fn app_running() -> bool {
     Command::new("pgrep").args(["-a", "-f", "Claude.app/Contents/MacOS/Claude"])
         .output().map(|o| !o.stdout.is_empty()).unwrap_or(false)
 }
-/// The desktop app is Chromium: while it runs it holds <user data>\lockfile open
-/// with no sharing, and Windows deletes the file when the process exits, crash
-/// included. So "can't open it" means running. This replaces a PowerShell
-/// process query that took ~2 s, flashed a console window, and only matched
-/// the Store install.
+/// Every folder a Windows Claude can keep its state in: a direct install's
+/// %APPDATA%\Claude, and the Microsoft Store build's
+/// %LOCALAPPDATA%\Packages\Claude_<publisher>\LocalCache\Roaming\Claude.
+#[cfg(target_os = "windows")]
+fn claude_dirs() -> Vec<String> {
+    let appdata = std::env::var("APPDATA")
+        .unwrap_or_else(|_| format!("{}/AppData/Roaming", home()));
+    let local = std::env::var("LOCALAPPDATA")
+        .unwrap_or_else(|_| format!("{}/AppData/Local", home()));
+    let mut cands = vec![format!("{}\\Claude", appdata)];
+    if let Ok(rd) = fs::read_dir(format!("{}\\Packages", local)) {
+        let mut pkgs: Vec<String> = rd.flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("Claude_"))
+            .map(|e| format!("{}\\LocalCache\\Roaming\\Claude", e.path().display()))
+            .collect();
+        pkgs.sort();
+        cands.extend(pkgs);
+    }
+    cands
+}
+
+/// The desktop app is Chromium: while it runs it holds <user data>\lockfile open,
+/// and Windows deletes the file when that handle closes, crash included. So a
+/// held lockfile means running. This replaced a PowerShell process query that
+/// took ~2 s, flashed a console window, and only matched the Store install.
+///
+/// The handle is not exclusive, though, and that is the whole trick. It has
+/// delete access - that is how delete-on-close works - and lets others read. A
+/// second open collides with it only if that open refuses to share delete.
+/// std's File::open shares read, write and delete, so it was let straight in
+/// and reported Claude as quit while it was plainly open: measured against a
+/// running Store install, where the CLI's plain open() caught it every time.
+/// lock_held shares read and write only - a sharing violation while the app
+/// runs, and a clean open, or no file at all, once it has gone.
+///
+/// A process list is no substitute. The Claude Code CLI is claude.exe too, both
+/// the standalone one and the one the desktop app's Code tab runs, so counting
+/// claude.exe would refuse forever while any terminal session was open.
 #[cfg(target_os = "windows")]
 fn app_running() -> bool {
+    // a Store install and a direct install can sit side by side, and the one
+    // that is running need not be the one with the newest chats
+    claude_dirs().iter().any(|d| lock_held(&format!("{}\\lockfile", d)))
+}
+
+#[cfg(target_os = "windows")]
+fn lock_held(path: &str) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
     const ERROR_SHARING_VIOLATION: i32 = 32;
-    match fs::File::open(format!("{}\\lockfile", claude_dir())) {
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    match fs::OpenOptions::new().read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)   // not FILE_SHARE_DELETE, see above
+        .open(path)
+    {
         Err(e) => e.raw_os_error() == Some(ERROR_SHARING_VIOLATION),
         Ok(_) => false,
+    }
+}
+
+/// Chromium's lockfile, rebuilt with nothing but std: delete access, delete on
+/// close, others allowed to read, write and delete. Windows-only because the
+/// mechanism is; there is no such handle on a Mac to model.
+#[cfg(all(test, target_os = "windows"))]
+mod lockfile_tests {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    #[test]
+    fn a_held_chromium_lockfile_reads_as_running() {
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const DELETE: u32 = 0x0001_0000;
+        const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
+        let path = std::env::temp_dir().join("ferry-lockfile-test");
+        let p = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+        assert!(!super::lock_held(&p), "no lockfile is not a running app");
+
+        let holder = std::fs::OpenOptions::new().read(true).write(true).create(true)
+            .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+            .share_mode(0x7)
+            .custom_flags(FILE_FLAG_DELETE_ON_CLOSE)
+            .open(&path).unwrap();
+        assert!(super::lock_held(&p), "a held lockfile must read as running");
+        // the open the guard used to make is let in, which was the bug
+        assert!(std::fs::File::open(&path).is_ok());
+
+        drop(holder);
+        assert!(!path.exists(), "delete-on-close takes the file with the handle");
+        assert!(!super::lock_held(&p), "once the app has gone it is not running");
     }
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -961,6 +1028,37 @@ fn cursor_msg_uuid(cid: &str, i: usize) -> String {
     s
 }
 
+/// Whether this transcript is one Ferry wrote from a Cursor conversation, which
+/// is the only kind a conversion may overwrite. It says so on every line; only
+/// the first is read, because the file being asked about can be 25 MB.
+fn ferry_wrote(path: &str) -> bool {
+    let Ok(f) = fs::File::open(path) else { return false };
+    let mut line = String::new();
+    if BufReader::new(f).read_line(&mut line).is_err() { return false; }
+    serde_json::from_str::<Value>(&line)
+        .map(|v| v["entrypoint"].as_str() == Some("cursor"))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod transcript_tests {
+    /// A Claude Code session must never read as Ferry's own, or converting a
+    /// round-tripped chat back would overwrite the conversation it came from.
+    #[test]
+    fn only_ferrys_own_transcript_counts_as_ours() {
+        let dir = std::env::temp_dir();
+        let ours = dir.join("ferry-wrote-ours.jsonl");
+        let theirs = dir.join("ferry-wrote-theirs.jsonl");
+        std::fs::write(&ours, "{\"type\":\"user\",\"entrypoint\":\"cursor\"}\n").unwrap();
+        std::fs::write(&theirs, "{\"type\":\"user\",\"entrypoint\":\"claude-desktop\"}\n").unwrap();
+        assert!(super::ferry_wrote(&ours.to_string_lossy()));
+        assert!(!super::ferry_wrote(&theirs.to_string_lossy()), "a Claude session is not ours");
+        assert!(!super::ferry_wrote(&dir.join("ferry-wrote-absent.jsonl").to_string_lossy()));
+        let _ = std::fs::remove_file(&ours);
+        let _ = std::fs::remove_file(&theirs);
+    }
+}
+
 /// A Claude Code transcript, written from turns that came from somewhere else.
 /// The shape is the one Claude Code appends: one JSON object a line, each
 /// linked to the one before it. entrypoint says where it really came from, so
@@ -975,6 +1073,22 @@ pub fn cursor_write_transcript(chat: &Value) -> Result<String, String> {
     let dir = project_dir(cwd);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = format!("{}/{}.jsonl", dir, cid);
+
+    // A Claude chat converted into Cursor keeps its session id as the composer
+    // id, so converting it back names the transcript after that same session -
+    // and that is the file the original chat already has, whenever the chat's
+    // folder is the Cursor workspace itself rather than something inside it. On
+    // the machine this was found on that was 8 of 14 chats, the largest 25 MB
+    // and 9,567 lines. The write below is a plain overwrite, so the chat would
+    // have come back as a few hundred flattened turns with the rest gone, and
+    // nothing would have said so.
+    if Path::new(&path).exists() && !ferry_wrote(&path) {
+        return Err(format!(
+            "that would overwrite a transcript Claude Code wrote, at {path}. \
+             Nothing was changed."));
+    }
+    snapshot(&path, "transcript");          // does nothing when there is no file yet
+
     let mut body = String::new();
     let mut prev = Value::Null;
     for (i, m) in msgs.iter().enumerate() {
