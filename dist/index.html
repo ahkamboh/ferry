@@ -294,7 +294,7 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 </style></head><body>
 
 <div id=bar>
-  <span class=brand><span class=nm>Ferry</span><span class=ver id=appver>1.5.3</span></span>
+  <span class=brand><span class=nm>Ferry</span><span class=ver id=appver>1.5.4</span></span>
   <span style="flex:1"></span>
   <span style="flex:1"></span><span id=lock role=group aria-label="App write locks"></span>
   <button class=btn onclick=vault() title="Copy every chat and transcript into ~/.ferry. Protects against Claude deleting a chat and against the 30-day transcript cleanup.">Back up</button>
@@ -319,7 +319,7 @@ const fmt=b=>b>=1048576?(b/1048576).toFixed(1)+" MB":Math.max(1,Math.round(b/102
 const day=m=>m?new Date(m).toISOString().slice(0,10):"-";
 const hue=s=>{let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))%360;return h;};
 const APP_NAME="Ferry";                       // one place to change the product name
-const FALLBACK_VER="1.5.3";                   // used until scan() returns version
+const FALLBACK_VER="1.5.4";                   // used until scan() returns version
 const appVer=()=>(S&&S.version)||FALLBACK_VER;
 function paintVer(){const v=appVer();const el=$("#appver");if(el)el.textContent=v;document.title=APP_NAME+" "+v;}
 const WIN=/Windows/.test(navigator.userAgent);   // genuinely platform-specific bits only
