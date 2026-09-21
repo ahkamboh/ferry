@@ -136,29 +136,37 @@ def project_dir(cwd):
     # in this path, since two long paths can share the first 200 characters
     if len(full) > CUT:
         try:
-            for name in os.listdir(PROJ):
+            for name in sorted(os.listdir(PROJ)):
                 prefix, _, h = name.rpartition("-")
-                if len(prefix) == CUT and h and full.startswith(prefix) and ran_in(os.path.join(PROJ, name), full):
+                if len(prefix) == CUT and h and full.startswith(prefix) and ran_in(os.path.join(PROJ, name), nfc(cwd)):
                     return os.path.join(PROJ, name)
         except Exception: pass
     return os.path.join(PROJ, named)
 
-def ran_in(d, full):
-    for f in sorted(glob.glob(os.path.join(d, "*.jsonl")))[:50]:
+def ran_in(d, cwd):
+    """Whether a folder's transcripts ran in cwd (already NFC): more of them name
+    it than any other path. The path is compared, not its encoding, since two
+    paths can encode alike."""
+    here = elsewhere = 0
+    files = sorted(f for f in glob.glob(os.path.join(glob.escape(d), "*.jsonl")) if os.path.isfile(f))
+    for f in files[:50]:
         try:
-            with open(f, encoding="utf-8", errors="replace") as fh:
-                for _, line in zip(range(20), fh):
-                    try: c = json.loads(line).get("cwd")
-                    except Exception: continue
-                    if c: return enc_cwd(nfc(c)) == full
+            with open(f, "rb") as fh: head = fh.read(256 * 1024)
         except Exception: continue
-    return False
+        for line in head.splitlines()[:20]:
+            try: c = json.loads(line.decode("utf-8", "replace")).get("cwd")
+            except Exception: continue
+            if isinstance(c, str) and c:
+                if nfc(c) == cwd: here += 1
+                else: elsewhere += 1
+                break
+    return here > elsewhere
 
 _INDEX = [0.0, None]
 def transcript_index():
     """Every transcript id and the folders holding it, read once and kept a few
     seconds, so a scan reads the tree once however many transcripts are missing."""
-    if _INDEX[1] is None or time.time() - _INDEX[0] > 5:
+    if _INDEX[1] is None or time.monotonic() - _INDEX[0] > 5:
         idx = {}
         try:
             for d in os.listdir(PROJ):
@@ -167,7 +175,7 @@ def transcript_index():
                 for n in names:
                     if n.endswith(".jsonl"): idx.setdefault(n[:-6], []).append(d)
         except Exception: pass
-        _INDEX[0], _INDEX[1] = time.time(), idx
+        _INDEX[0], _INDEX[1] = time.monotonic(), idx
     return _INDEX[1]
 
 def misfiled(cwd, sid):
