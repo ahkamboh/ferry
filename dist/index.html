@@ -1335,10 +1335,10 @@ function nbIncoming(inc){
       if(r.acct){scopeKey=r.acct+"|"+r.org;chatPath=r.wrote;}
       await load();
       if(chatPath){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){}}
-      toast(r.repointed?"Received from "+inc.from+". It's now filed under "+r.cwd+"."
-        :r.known&&r.written===0?"You already had all of this chat."
-        :r.folderHere===false
+      toast(r.folderHere===false&&(r.repointed||!r.known||r.written>0)
         ?"Received. Its folder isn't on this machine: use the folder chip to point it at one."
+        :r.repointed?"Received from "+inc.from+". It's now filed under "+r.cwd+"."
+        :r.known&&r.written===0?"You already had all of this chat."
         :r.recordKept?"Received from "+inc.from+". The conversation is updated; Claude shows the new part after it restarts."
         :r.known?"Your copy of this chat is up to date."+(nbChose?" It stays in "+r.cwd+", where you already had it.":"")
         :r.claudeOpen?"Received from "+inc.from+". Claude lists it the next time it starts."

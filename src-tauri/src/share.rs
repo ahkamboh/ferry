@@ -539,7 +539,15 @@ fn commit(r: &Roots, stage: &str, offer: &Value, files: &[FileSpec], rec: &Value
     if cwd.split(|c| c == '/' || c == '\\').any(|seg| seg == "." || seg == "..") {
         return Err("that folder path isn't usable. Choose a folder on this machine.".into());
     }
-    let dir = r.pdir(&cwd);
+    let mut dir = r.pdir(&cwd);
+    // A transcript an older rule filed in a sibling folder is still this
+    // chat's: compare against it and update it there, where reads find it.
+    // Set folder moves it home.
+    if !Path::new(&format!("{}/{}.jsonl", dir, main_id)).exists() {
+        if let Some(p) = misfiled_in(&r.proj, &cwd, main_id) {
+            if let Some(d) = Path::new(&p).parent() { dir = d.to_string_lossy().to_string(); }
+        }
+    }
     let escapes = Path::new(&dir).components()
         .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir));
     if escapes || !under(&r.proj, &dir) || Path::new(&dir) == Path::new(&r.proj) {
@@ -1747,6 +1755,41 @@ mod tests {
         let (sent, _) = transfer(&recv_root, &rec, files, None);
         assert!(sent.unwrap_err().contains("different conversation"));
         assert_eq!(fs::read_to_string(at(mine)).unwrap(), longer, "untouched");
+        for d in [send_root, recv_root] { let _ = fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn a_misfiled_transcript_is_compared_where_it_lives() {
+        let send_root = tmp("send-misfiled");
+        let recv_root = tmp("recv-misfiled");
+        let id = "56565656-7878-4909-8a1a-2b2b2b2b2b2b";
+        let cwd = "/Users/receiver/Documents/GitHub/newapp";
+        // the rule before 1.6.2 filed it with a sibling project
+        let first = user_line(cwd, "first question");
+        let rp = known_chat(&recv_root, "local_m1", id, cwd, "", json!({}));
+        let own = format!("{recv_root}/proj/{}", enc_cwd(cwd));
+        fs::remove_dir_all(&own).unwrap();
+        let sibling = format!("{recv_root}/proj/-Users-receiver-Documents-GitHub-ferry");
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(format!("{sibling}/{id}.jsonl"), &first).unwrap();
+        let _ = rp;
+        let main = format!("{send_root}/{id}.jsonl");
+        let send = |body: &str| {
+            fs::write(&main, body).unwrap();
+            let files = vec![(FileSpec { kind: Kind::Main, id: id.into(), name: String::new(), size: body.len() as u64 }, main.clone())];
+            transfer(&recv_root, &json!({ "sessionId": "local_m1", "cliSessionId": id, "cwd": cwd }), files, None)
+        };
+        // a different conversation under that id is refused, as it would be at home
+        let (sent, _) = send(&user_line(cwd, "something else entirely"));
+        assert!(sent.unwrap_err().contains("different conversation"));
+        assert_eq!(fs::read_to_string(format!("{sibling}/{id}.jsonl")).unwrap(), first, "untouched");
+        assert!(!Path::new(&format!("{own}/{id}.jsonl")).exists(), "and no copy hiding it");
+        // the same conversation, gone on, updates it where reads find it
+        let longer = first.clone() + &user_line(cwd, "second question");
+        let (sent, _) = send(&longer);
+        assert_eq!(sent.unwrap(), "done");
+        assert_eq!(fs::read_to_string(format!("{sibling}/{id}.jsonl")).unwrap(), longer);
+        assert!(!Path::new(&format!("{own}/{id}.jsonl")).exists());
         for d in [send_root, recv_root] { let _ = fs::remove_dir_all(d); }
     }
 
