@@ -406,16 +406,32 @@ impl Roots {
 #[derive(Debug, PartialEq)]
 enum Cmp { Same, Longer, Shorter, Differs }
 
-/// A transcript Ferry wrote from a Cursor conversation says so on every line.
-fn cursor_made(p: &str) -> bool {
-    let Ok(f) = fs::File::open(p) else { return false };
-    let mut line = String::new();
-    if std::io::BufRead::read_line(&mut std::io::BufReader::new(f), &mut line).is_err() { return false; }
-    serde_json::from_str::<Value>(&line).map(|v| v["entrypoint"].as_str() == Some("cursor")).unwrap_or(false)
+/// Every line of a transcript Ferry wrote from a Cursor conversation says so,
+/// and carries that conversation's id.
+fn cursor_lines(b: &[u8], id: &str) -> Option<Vec<Value>> {
+    let text = std::str::from_utf8(b).ok()?;
+    let mut out = vec![];
+    for l in text.lines().filter(|l| !l.trim().is_empty()) {
+        let v: Value = serde_json::from_str(l).ok()?;
+        if v["entrypoint"].as_str() != Some("cursor") || v["sessionId"].as_str() != Some(id) { return None; }
+        out.push(v);
+    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
-fn lines(p: &str) -> usize {
-    fs::read(p).map(|b| b.iter().filter(|&&c| c == b'\n').count()).unwrap_or(0)
+/// Whether `src` is a later rendering of the Cursor conversation already at `to`.
+fn cursor_newer(to: &str, src: &str, id: &str) -> bool {
+    let (Ok(old), Ok(new)) = (fs::read(to), fs::read(src)) else { return false };
+    let (Some(ol), Some(nl)) = (cursor_lines(&old, id), cursor_lines(&new, id)) else { return false };
+    // everything before the older copy's last line is unchanged
+    let body = old.strip_suffix(b"\n").unwrap_or(&old);
+    let head = match body.iter().rposition(|&c| c == b'\n') { Some(i) => &old[..=i], None => &old[..0] };
+    if !new.starts_with(head) { return false; }
+    if nl.len() != ol.len() { return nl.len() > ol.len(); }
+    let (a, b) = (&ol[ol.len() - 1], &nl[nl.len() - 1]);
+    let t = |v: &Value| v["timestamp"].as_str().unwrap_or("").to_string();
+    let n = |v: &Value| v["message"]["content"].as_str().map(|s| s.len()).unwrap_or(0);
+    t(b) > t(a) || (t(b) == t(a) && n(b) > n(a))
 }
 
 /// Two copies of one transcript. A transcript only ever grows, so when one is
@@ -542,12 +558,12 @@ fn commit(r: &Roots, stage: &str, offer: &Value, files: &[FileSpec], rec: &Value
         match compare(&to, &src)? {
             Cmp::Same | Cmp::Shorter => kept += 1,        // this machine already has all of it
             Cmp::Longer => plan.push((src, to, true)),    // the conversation went on since
-            // Both written by Ferry from the same Cursor conversation: Cursor folds
-            // a trailing tool run into the next reply once the chat goes on, so a
-            // later rendering doesn't start with the earlier one. It is still the
-            // same chat, and the one with at least as many lines is the newer.
-            Cmp::Differs if f.kind == Kind::Main && cursor_made(&to) && cursor_made(&src)
-                            && lines(&src) >= lines(&to) => plan.push((src, to, true)),
+            // A later rendering of the same Cursor conversation: Cursor folds a
+            // trailing tool run into the next reply once the chat goes on, so the
+            // newer copy doesn't start with the older one. It may replace it only
+            // if everything but the older copy's last line matches byte for byte,
+            // and it is genuinely newer: more lines, or its last one later.
+            Cmp::Differs if f.kind == Kind::Main && cursor_newer(&to, &src, &f.id) => plan.push((src, to, true)),
             Cmp::Differs => return Err(format!(
                 "this machine already has a different conversation under the same id ({}). \
                  Nothing was changed.", f.id)),
@@ -646,7 +662,8 @@ fn commit(r: &Roots, stage: &str, offer: &Value, files: &[FileSpec], rec: &Value
 
     Ok(json!({ "ok": true, "wrote": dst, "cwd": cwd,
                "title": out.as_ref().or(existing.as_ref()).map(|o| o["title"].clone()).unwrap_or(Value::Null),
-               "claudeOpen": claude_open, "known": existing.is_some(), "recordKept": out.is_none(),
+               "claudeOpen": claude_open, "known": existing.is_some(), "repointed": repoint,
+               "recordKept": out.is_none(),
                "folderHere": Path::new(&cwd).is_dir(), "written": plan.len(), "kept": kept,
                "acct": a.acct, "org": a.org }))
 }
@@ -1153,15 +1170,24 @@ pub fn answer(accept: bool, acct: String, org: String, folder: Option<String>) -
 }
 
 /// Clear the staging folders a transfer left behind when Ferry quit mid-way.
-/// Only ones untouched for an hour: a live transfer writes to its own often,
-/// and a second copy of Ferry may be running.
+/// Only ones with nothing written for an hour, judged by the newest file in
+/// them (writing into a file doesn't touch its folder's time): a second copy of
+/// Ferry may be running a transfer.
 pub fn sweep() { sweep_in(&vault(), Duration::from_secs(3600)); }
 fn sweep_in(vault: &str, age: Duration) {
+    fn newest(p: &Path, depth: u8) -> Option<std::time::SystemTime> {
+        let mut t = fs::metadata(p).and_then(|m| m.modified()).ok();
+        if depth > 0 {
+            for e in fs::read_dir(p).into_iter().flatten().flatten() {
+                if let Some(x) = newest(&e.path(), depth - 1) { t = Some(t.map_or(x, |y| y.max(x))); }
+            }
+        }
+        t
+    }
     for d in ["outgoing", "incoming"] {
         let Ok(rd) = fs::read_dir(format!("{vault}/{d}")) else { continue };
         for e in rd.flatten() {
-            let old = e.metadata().and_then(|m| m.modified()).ok()
-                .and_then(|t| t.elapsed().ok()).map(|el| el >= age).unwrap_or(false);
+            let old = newest(&e.path(), 2).and_then(|t| t.elapsed().ok()).map(|el| el >= age).unwrap_or(false);
             if old { let _ = fs::remove_dir_all(e.path()); }
         }
     }
@@ -1858,6 +1884,43 @@ mod tests {
         assert!(Path::new(&format!("{v}/outgoing/aaa")).exists(), "a transfer that may be live is left alone");
         sweep_in(&v, Duration::ZERO);
         assert!(!Path::new(&format!("{v}/outgoing/aaa")).exists() && !Path::new(&format!("{v}/incoming/bbb")).exists());
+        let _ = fs::remove_dir_all(v);
+    }
+
+    #[test]
+    fn an_older_cursor_rendering_never_replaces_a_newer_one() {
+        let root = tmp("rerender-rules");
+        let cid = "0f0f0f0f-2a2a-4b3b-8c4c-606060606060";
+        let cwd = "/Users/ali/code/site";
+        let m = |r: &str, t: &str, ts: &str| json!({ "role": r, "text": t, "t": ts });
+        let older = transcript_lines(cid, cwd, &[m("user", "fix it", "2026-09-20T09:00:00.000Z"),
+                                                m("assistant", "(read_file main.rs)", "2026-09-20T09:00:00.000Z")]);
+        let newer = transcript_lines(cid, cwd, &[m("user", "fix it", "2026-09-20T09:00:00.000Z"),
+                                                m("assistant", "(read_file main.rs)\n\nFixed.", "2026-09-20T09:00:09.000Z")]);
+        let (a, b) = (format!("{root}/a.jsonl"), format!("{root}/b.jsonl"));
+        fs::write(&a, &older).unwrap(); fs::write(&b, &newer).unwrap();
+        assert!(cursor_newer(&a, &b, cid), "same line count, later last line: newer");
+        assert!(!cursor_newer(&b, &a, cid), "the older one must not replace the newer");
+        // a file that only claims to be Cursor-made, with different earlier lines
+        let forged = transcript_lines(cid, cwd, &[m("user", "INJECTED", "2026-09-20T09:00:00.000Z"),
+                                                 m("assistant", "x", "2026-09-21T00:00:00.000Z"),
+                                                 m("user", "y", "2026-09-21T00:00:01.000Z")]);
+        fs::write(&b, &forged).unwrap();
+        assert!(!cursor_newer(&a, &b, cid), "earlier lines must match");
+        // a different conversation's id on its lines
+        fs::write(&b, newer.replace(cid, "11111111-2222-4333-8444-555555555555")).unwrap();
+        assert!(!cursor_newer(&a, &b, cid));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_live_staging_folder_is_judged_by_its_newest_file() {
+        let v = tmp("sweep-newest");
+        let d = format!("{v}/incoming/live");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(format!("{d}/0.jsonl"), "x").unwrap();
+        sweep_in(&v, Duration::from_secs(3600));
+        assert!(Path::new(&d).exists(), "fresh file inside: kept");
         let _ = fs::remove_dir_all(v);
     }
 }

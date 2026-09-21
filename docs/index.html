@@ -172,7 +172,7 @@ footer a{color:var(--dim)}
   </table>
   <p style="margin-top:18px">Because transcripts are account-agnostic, moving a chat only moves about <strong>10&nbsp;KB of JSON</strong>. A 45&nbsp;MB conversation transfers in the same instant as a tiny one, and nothing is duplicated on disk.</p>
   <div class="note">
-    <strong>Ferry leaves your conversations alone.</strong> It writes the small metadata record, and snapshots every file before changing it. Only two things write a transcript: converting a Cursor chat into Claude, and receiving a chat over Nearby. Receiving is the one write allowed while the Claude app is open; everything else waits until you quit it.
+    <strong>Ferry leaves your conversations alone.</strong> It writes the small metadata record, and snapshots every file before changing it. Only two things write a transcript: converting a Cursor chat into Claude, and receiving a chat over Nearby. Receiving is the one write to Claude's files allowed while the Claude app is open; everything else there waits until you quit it. Converting a chat into Cursor only needs Cursor closed.
   </div>
 </section>
 
