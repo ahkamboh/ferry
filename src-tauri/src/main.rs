@@ -2326,6 +2326,9 @@ fn nearby_answer(accept: bool, acct: String, org: String, folder: Option<String>
 }
 
 #[tauri::command]
+fn nearby_confirm(yes: bool) -> Result<Value, String> { share::confirm_send(yes) }
+
+#[tauri::command]
 fn nearby_cancel() -> Value { share::cancel() }
 
 #[tauri::command]
@@ -2350,7 +2353,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             scan, chat_detail, chat_full, export_chat, copy_chat, import_session, export_to_cursor,
             set_folder, rename_chat, delete_chat, undelete_chat, set_label, run_vault, set_zoom,
-            nearby, nearby_state, nearby_send, nearby_answer, nearby_cancel, nearby_dismiss, pick_folder
+            nearby, nearby_state, nearby_send, nearby_answer, nearby_confirm, nearby_cancel,
+            nearby_dismiss, pick_folder
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch Ferry");

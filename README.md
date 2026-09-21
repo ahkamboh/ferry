@@ -57,6 +57,7 @@ Ferry fixes both. It reads the files Claude Code already writes, lets you carry 
 | **Delete and undelete** | deletes are reversible; restore from another account or from the archive |
 | **Back up** | one button archives every chat and every transcript, subagent transcripts included |
 | **Zoom** | Ctrl/Cmd + and − (or Ctrl/Cmd + scroll), Ctrl/Cmd 0 to reset; the level is remembered |
+| **Nearby** | send a chat to someone else's Ferry on the same Wi-Fi, Mac or Windows. Off until you turn it on |
 
 ## Why moving a chat is instant
 
@@ -231,9 +232,22 @@ Reading SQLite from Rust means bundling it, which is what took Ferry from 4.3 MB
 
 The archive is yours, outside anything Claude Code manages. Once a chat is in it, deletion becomes cosmetic — restore it into whichever account you want.
 
+## Nearby
+
+Send a chat to another person's Ferry on the same network. It works between a Mac and a Windows PC in either direction.
+
+1. Both people press **Nearby** in the top bar. It's off until you do.
+2. Open the chat, press **Nearby** next to Download, and pick the other machine. If it doesn't show up (some office and café Wi-Fi blocks discovery), type the address the other person's Nearby menu shows.
+3. The other person sees who's sending, what, and a six-digit code. They pick the account it goes into, and a folder on their machine if yours doesn't exist there, then press **Accept**.
+4. You check that their code matches yours and press **Codes match, send**.
+
+Both sides confirm the code, the same way Bluetooth pairing does. If a device on the network pretends to be your friend, the codes won't match, or your friend won't have seen a code at all, and nothing is sent. The transfer is encrypted (X25519 and ChaCha20-Poly1305), and Ferry refuses any address outside your local network.
+
+Receiving works with Claude open. A received chat is new to that account, so there's nothing for Claude to overwrite; Claude lists it the next time it starts. The receiving side checks everything it's sent before writing: ids and file names can't point outside Claude's folders, sizes are capped, files are staged until all of them have arrived, and a different conversation under the same id is refused with nothing changed.
+
 ## Safety
 
-- **Writes are refused while the Claude app is running.** Quit Claude first; the title bar tells you when editing is off.
+- **Writes are refused while the Claude app is running.** Quit Claude first; the title bar tells you when editing is off. The exception is receiving a chat over Nearby, which adds a chat Claude has never loaded.
 - **Every change is snapshotted** into `~/.ferry/snapshots/` before it happens.
 - **Transcripts are never moved or edited.** Only the small metadata record moves. Importing a CLI or VS Code chat writes one; it never writes back into the transcript, and a chat that has no record yet cannot be renamed, moved or deleted. Setting a chat's folder gives its transcript a second name by hard link — the same file, still in the folder it came from, with nothing rewritten.
 - **Connector settings are stripped on copy.** MCP connector IDs belong to the account that created them and don't resolve elsewhere.
@@ -260,7 +274,7 @@ No. Only the small record is written, and the record is new — the transcript i
 Its transcript was pruned by Claude Code's cleanup. The record survives, the conversation doesn't. Backing up prevents this.
 
 **Does this send anything anywhere?**
-No. Ferry has no network code. It reads and writes local files only.
+Not over the internet. Ferry reads and writes local files. The one network feature, Nearby, only talks to other Ferry apps on your local network, is off until you turn it on, and sends a chat only after both people confirm the same code.
 
 **Does it work on Windows or Linux?**
 macOS and Windows are both built and tested. On Windows the layout is

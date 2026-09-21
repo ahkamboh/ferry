@@ -12,11 +12,21 @@
 //!     sitting in between would have to run two exchanges, and the two people
 //!     would see two different codes.
 //!  3. The sender describes the chat. Nothing else moves until the person on
-//!     the other side accepts it and picks the account it goes into.
+//!     the other side accepts it and picks the account it goes into, and the
+//!     sender then confirms the code matches the one on the other screen. Both
+//!     confirm, as in Bluetooth pairing: a device that only calls itself by a
+//!     friend's name never gets the chat, because the friend never saw its code.
 //!  4. The receiver trusts nothing it is told. Ids and file names are checked
 //!     before they become paths, sizes are capped, every file is staged and
 //!     moved in only once all of them arrived, and a conversation already on
 //!     this machine is never replaced by a different one.
+//!
+//! Receiving does not wait for Claude to be quit, unlike Ferry's other writes.
+//! Those change records Claude already holds in memory, and Claude can write
+//! its own copy back over them. A received chat is new to the account: its
+//! transcript goes where Claude Code writes transcripts all the time, and its
+//! record is one Claude has never loaded, so there is nothing to write back.
+//! With Claude open it simply lists the chat the next time it starts.
 
 use super::*;
 use chacha20poly1305::aead::{Aead, KeyInit};
@@ -71,6 +81,7 @@ struct St {
     incoming: Option<Value>,
     answer: Option<mpsc::Sender<Answer>>,
     outgoing: Option<Value>,
+    confirm: Option<mpsc::Sender<bool>>,
     cancel: Option<TcpStream>,
 }
 
@@ -424,28 +435,41 @@ fn commit(r: &Roots, stage: &str, offer: &Value, files: &[FileSpec], rec: &Value
         fs::copy(src, dst).map_err(|e| e.to_string())?;
     }
 
+    // The record is built here from a fixed set of fields, never copied over.
+    // The sender's record came off the network: a field it chose to add would
+    // otherwise land in this account, and a session id list such as
+    // bridgeSessionIds is followed as a path by later actions like set_folder.
+    // These are the fields an import writes, which Claude is known to list.
     let main_id = &files[0].id;
     let tpl = template_record(&scope);
-    let claimed = rec.is_object()
-        && rec["sessionId"].as_str().map(|s| s.starts_with("local_") && safe_seg(s)).unwrap_or(false);
-    let mut out = if claimed {
-        let mut o = rec.clone();
-        if let Some(m) = o.as_object_mut() { for k in ACCOUNT_SCOPED { m.remove(k); } }
-        o
-    } else {
-        // A session the sender's CLI or VS Code ran: no account ever claimed it,
-        // so it gets the record it never had, the way an import does.
-        let info = read_session(&format!("{}/{}.jsonl", dir, main_id))
-            .ok_or("the conversation arrived but can't be read")?;
-        let mut o = json!({
-            "sessionId": format!("local_{main_id}"), "cliSessionId": main_id,
-            "title": info["title"], "titleSource": "auto",
-            "createdAt": info["created"], "lastActivityAt": info["last"],
-            "lastFocusedAt": info["last"], "completedTurns": info["turns"], "isArchived": false,
-        });
-        if let Some(m) = info["model"].as_str() { if !m.is_empty() { o["model"] = json!(m); } }
-        o
-    };
+    let info = read_session(&format!("{}/{}.jsonl", dir, main_id))
+        .ok_or("the conversation arrived but can't be read")?;
+    let sid = rec["sessionId"].as_str()
+        .filter(|s| s.starts_with("local_") && safe_seg(s))
+        .map(String::from)
+        .unwrap_or_else(|| format!("local_{main_id}"));      // an unclaimed CLI or VS Code session
+    let num = |k: &str, fb: &Value| if rec[k].is_u64() || rec[k].is_i64() { rec[k].clone() } else { fb.clone() };
+    let title = rec["title"].as_str().map(|t| clean(t, 300)).filter(|t| !t.is_empty())
+        .unwrap_or_else(|| clean(info["title"].as_str().unwrap_or("(untitled)"), 300));
+    let mut out = json!({
+        "sessionId": sid, "cliSessionId": main_id,
+        "title": title,
+        "titleSource": if rec["titleSource"].as_str() == Some("user") { "user" } else { "auto" },
+        "createdAt": num("createdAt", &info["created"]),
+        "lastActivityAt": num("lastActivityAt", &info["last"]),
+        "lastFocusedAt": num("lastFocusedAt", &info["last"]),
+        "completedTurns": num("completedTurns", &info["turns"]),
+        "isArchived": false,
+    });
+    let model = rec["model"].as_str().or(info["model"].as_str()).map(|m| clean(m, 100)).unwrap_or_default();
+    if !model.is_empty() { out["model"] = json!(model); }
+    // earlier sessions of the same chat, but only ones whose file came with it
+    let arrived: HashSet<&str> = files.iter().filter(|f| f.kind == Kind::Main).map(|f| f.id.as_str()).collect();
+    for k in ["priorCliSessionIds", "bridgeSessionIds"] {
+        let ids: Vec<&str> = rec[k].as_array().map(|a| a.iter().filter_map(|v| v.as_str())
+            .filter(|i| *i != main_id.as_str() && arrived.contains(i)).collect()).unwrap_or_default();
+        if !ids.is_empty() { out[k] = json!(ids); }
+    }
     // Fields that only resolve on the machine that wrote them come from a record
     // this account already has, or are left out.
     for k in INHERIT {
@@ -466,6 +490,7 @@ fn commit(r: &Roots, stage: &str, offer: &Value, files: &[FileSpec], rec: &Value
     if Path::new(&tomb).exists() { r.snap(&tomb, "undelete"); let _ = fs::remove_file(&tomb); }
 
     Ok(json!({ "ok": true, "wrote": dst, "title": out["title"], "cwd": cwd,
+               "claudeOpen": r.real && app_running(),
                "folderHere": Path::new(&cwd).is_dir(), "written": plan.len(), "kept": kept,
                "acct": a.acct, "org": a.org }))
 }
@@ -474,7 +499,7 @@ fn commit(r: &Roots, stage: &str, offer: &Value, files: &[FileSpec], rec: &Value
 
 type Decide = dyn Fn(&Value, &Value, &str) -> Option<Answer> + Send + Sync;
 
-struct Ctx { roots: Roots, decide: Box<Decide>, guard: fn() -> Result<(), String> }
+struct Ctx { roots: Roots, decide: Box<Decide> }
 
 fn set_incoming(k: &str, v: Value) {
     if let Some(i) = st().incoming.as_mut() { i[k] = v; }
@@ -512,6 +537,16 @@ fn serve(s: TcpStream, ctx: &Ctx) -> Result<Value, String> {
         return Ok(json!({ "declined": true }));
     };
     ch.send_json(&json!({ "t": "accept" }))?;
+    // Now the sender checks the code against this screen. It has as long as
+    // this side had to decide.
+    let _ = ch.s.set_read_timeout(Some(ASK_FOR + Duration::from_secs(30)));
+    let go = ch.recv_json()?;
+    if go["t"].as_str() != Some("go") {
+        set_incoming("state", json!("cancelled"));
+        return Ok(json!({ "cancelled": true }));
+    }
+    let _ = ch.s.set_read_timeout(Some(Duration::from_secs(30)));
+    set_incoming("state", json!("receiving"));
 
     let stage = format!("{}/incoming/{}", ctx.roots.vault, rand_hex(6));
     let res = (|| {
@@ -519,7 +554,6 @@ fn serve(s: TcpStream, ctx: &Ctx) -> Result<Value, String> {
         let mut got = 0u64;
         for f in &files { receive_file(&mut ch, &stage, f, &mut got)?; }
         let rec = ch.recv_json()?;
-        (ctx.guard)()?;          // Claude may have been opened while the files came in
         commit(&ctx.roots, &stage, &offer, &files, &rec, &ans)
     })();
     let _ = fs::remove_dir_all(&stage);
@@ -546,7 +580,7 @@ fn ask_person(peer: &Value, offer: &Value, code: &str) -> Option<Answer> {
     {
         let mut g = st();
         let busy = g.incoming.as_ref()
-            .map(|i| matches!(i["state"].as_str(), Some("asking" | "receiving"))).unwrap_or(false);
+            .map(|i| matches!(i["state"].as_str(), Some("asking" | "confirming" | "receiving"))).unwrap_or(false);
         if !g.on || busy { return None; }
         let files = offer["files"].as_array().map(|a| a.len()).unwrap_or(0);
         g.incoming = Some(json!({
@@ -568,7 +602,7 @@ fn ask_person(peer: &Value, offer: &Value, code: &str) -> Option<Answer> {
     g.answer = None;
     let yes = a.as_ref().map(|x| x.accept).unwrap_or(false);
     if let Some(i) = g.incoming.as_mut() {
-        i["state"] = json!(if yes { "receiving" } else if a.is_some() { "declined" } else { "expired" });
+        i["state"] = json!(if yes { "confirming" } else if a.is_some() { "declined" } else { "expired" });
     }
     a.filter(|x| x.accept)
 }
@@ -581,7 +615,7 @@ fn accept_loop(l: TcpListener, stop: Arc<AtomicBool>) {
                 let _ = s.set_nonblocking(false);
                 ACTIVE.fetch_add(1, Ordering::SeqCst);
                 std::thread::spawn(move || {
-                    let ctx = Ctx { roots: Roots::real(), decide: Box::new(ask_person), guard };
+                    let ctx = Ctx { roots: Roots::real(), decide: Box::new(ask_person) };
                     let _ = serve(s, &ctx);
                     ACTIVE.fetch_sub(1, Ordering::SeqCst);
                 });
@@ -670,6 +704,7 @@ pub fn stop() -> Value {
         let mut g = st();
         g.on = false;
         g.peers.clear();
+        if let Some(c) = g.confirm.take() { let _ = c.send(false); }
         (g.mdns.take(), std::mem::take(&mut g.fullname), g.stop.take(), g.answer.take())
     };
     if let Some(s) = stop { s.store(true, Ordering::Relaxed); }
@@ -707,7 +742,7 @@ fn parse_addr(s: &str) -> Result<Vec<SocketAddr>, String> {
 }
 
 fn run_send(addrs: &[SocketAddr], rec: &Value, files: &[(FileSpec, String)],
-            set: &mut dyn FnMut(&str, Value)) -> Result<&'static str, String> {
+            set: &mut dyn FnMut(&str, Value), confirm: &dyn Fn() -> bool) -> Result<&'static str, String> {
     let mut last = String::from("no address to try");
     let mut sock = None;
     for a in addrs {
@@ -747,6 +782,14 @@ fn run_send(addrs: &[SocketAddr], rec: &Value, files: &[(FileSpec, String)],
             return Ok("declined");
         }
     }
+    // They accepted. Nothing leaves until this side agrees the code matches
+    // theirs: a device posing under a friend's name gets no further than here.
+    set("state", json!("confirm"));
+    if !confirm() {
+        let _ = ch.send_json(&json!({ "t": "abort" }));
+        return Ok("cancelled");
+    }
+    ch.send_json(&json!({ "t": "go" }))?;
     let _ = ch.s.set_read_timeout(Some(Duration::from_secs(90)));
     set("state", json!("sending"));
 
@@ -802,7 +845,7 @@ pub fn send(path: String, to: String) -> Result<Value, String> {
     {
         let mut g = st();
         let live = g.outgoing.as_ref()
-            .map(|o| matches!(o["state"].as_str(), Some("connecting" | "waiting" | "sending"))).unwrap_or(false);
+            .map(|o| matches!(o["state"].as_str(), Some("connecting" | "waiting" | "confirm" | "sending"))).unwrap_or(false);
         if live { return Err("already sending a chat".into()); }
         g.outgoing = Some(json!({
             "state": "connecting", "to": if shown.is_empty() { to.clone() } else { shown },
@@ -811,7 +854,14 @@ pub fn send(path: String, to: String) -> Result<Value, String> {
     }
     std::thread::spawn(move || {
         let mut set = |k: &str, v: Value| { if let Some(o) = st().outgoing.as_mut() { o[k] = v; } };
-        let r = run_send(&addrs, &rec, &files, &mut set);
+        let confirm = || {
+            let (tx, rx) = mpsc::channel();
+            st().confirm = Some(tx);
+            let yes = rx.recv_timeout(ASK_FOR).unwrap_or(false);
+            st().confirm = None;
+            yes
+        };
+        let r = run_send(&addrs, &rec, &files, &mut set, &confirm);
         let mut g = st();
         g.cancel = None;
         if let Some(o) = g.outgoing.as_mut() {
@@ -827,7 +877,6 @@ pub fn send(path: String, to: String) -> Result<Value, String> {
 
 pub fn answer(accept: bool, acct: String, org: String, folder: Option<String>) -> Result<Value, String> {
     if accept {
-        guard()?;
         if !safe_seg(&acct) || !safe_seg(&org) || !Path::new(&format!("{}/{}/{}", sess(), acct, org)).is_dir() {
             return Err("pick an account on this machine".into());
         }
@@ -840,11 +889,19 @@ pub fn answer(accept: bool, acct: String, org: String, folder: Option<String>) -
     Ok(json!({ "ok": true }))
 }
 
+/// The sender's half of the code check.
+pub fn confirm_send(yes: bool) -> Result<Value, String> {
+    let tx = st().confirm.take().ok_or("nothing is waiting on that")?;
+    let _ = tx.send(yes);
+    Ok(state())
+}
+
 pub fn cancel() -> Value {
     let mut g = st();
+    if let Some(tx) = g.confirm.take() { let _ = tx.send(false); }
     if let Some(s) = g.cancel.take() { let _ = s.shutdown(std::net::Shutdown::Both); }
     if let Some(o) = g.outgoing.as_mut() {
-        if matches!(o["state"].as_str(), Some("connecting" | "waiting" | "sending")) {
+        if matches!(o["state"].as_str(), Some("connecting" | "waiting" | "confirm" | "sending")) {
             o["state"] = json!("cancelled");
         }
     }
@@ -855,10 +912,10 @@ pub fn cancel() -> Value {
 /// Clear a finished transfer off the screen. One still asking or moving stays.
 pub fn dismiss() -> Value {
     let mut g = st();
-    if g.incoming.as_ref().map(|i| !matches!(i["state"].as_str(), Some("asking" | "receiving"))).unwrap_or(false) {
+    if g.incoming.as_ref().map(|i| !matches!(i["state"].as_str(), Some("asking" | "confirming" | "receiving"))).unwrap_or(false) {
         g.incoming = None;
     }
-    if g.outgoing.as_ref().map(|o| !matches!(o["state"].as_str(), Some("connecting" | "waiting" | "sending"))).unwrap_or(false) {
+    if g.outgoing.as_ref().map(|o| !matches!(o["state"].as_str(), Some("connecting" | "waiting" | "confirm" | "sending"))).unwrap_or(false) {
         g.outgoing = None;
     }
     drop(g);
@@ -953,6 +1010,11 @@ mod tests {
     /// socket, the way two machines would. Returns the receiver's answer.
     fn transfer(recv_root: &str, rec: &Value, files: Vec<(FileSpec, String)>, folder: Option<String>)
                 -> (Result<&'static str, String>, Result<Value, String>) {
+        transfer_as(recv_root, rec, files, folder, true)
+    }
+
+    fn transfer_as(recv_root: &str, rec: &Value, files: Vec<(FileSpec, String)>, folder: Option<String>,
+                   sender_confirms: bool) -> (Result<&'static str, String>, Result<Value, String>) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         let root = recv_root.to_string();
@@ -961,13 +1023,12 @@ mod tests {
             let ctx = Ctx {
                 roots: Roots { sess: format!("{root}/sess"), proj: format!("{root}/proj"),
                                vault: format!("{root}/vault"), real: false },
-                decide: Box::new(move |_, _, _| Some(Answer {
+                decide: Box::new(move |_: &Value, _: &Value, _: &str| Some(Answer {
                     accept: true, acct: "acct-b".into(), org: "org-b".into(), folder: folder.clone() })),
-                guard: || Ok(()),
             };
             serve(s, &ctx)
         });
-        let sent = run_send(&[addr], rec, &files, &mut |_, _| {});
+        let sent = run_send(&[addr], rec, &files, &mut |_, _| {}, &move || sender_confirms);
         (sent, t.join().unwrap())
     }
 
@@ -1070,6 +1131,56 @@ mod tests {
         assert_eq!(r["sessionId"], format!("local_{sid}"));
         assert_eq!(r["cwd"], cwd, "a Windows path is kept as the folder it ran in");
         assert_eq!(got["folderHere"], false);
+        for d in [send_root, recv_root] { let _ = fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn nothing_moves_until_the_sender_confirms_the_code() {
+        let send_root = tmp("send-no");
+        let recv_root = tmp("recv-no");
+        fs::create_dir_all(format!("{recv_root}/sess/acct-b/org-b")).unwrap();
+        let sid = "cccccccc-dddd-4eee-8fff-000000000000";
+        let main = format!("{send_root}/{sid}.jsonl");
+        fs::write(&main, json!({ "type": "user", "cwd": "/Users/a/p", "timestamp": "2026-09-19T08:00:00.000Z",
+                                 "message": { "role": "user", "content": "hi" } }).to_string() + "\n").unwrap();
+        let rec = json!({ "sessionId": format!("local_{sid}"), "cliSessionId": sid, "cwd": "/Users/a/p" });
+        let files = vec![(FileSpec { kind: Kind::Main, id: sid.into(), name: String::new(),
+                                     size: fs::metadata(&main).unwrap().len() }, main.clone())];
+        let (sent, got) = transfer_as(&recv_root, &rec, files, None, false);
+        assert_eq!(sent.unwrap(), "cancelled");
+        assert_eq!(got.unwrap()["cancelled"], true);
+        assert!(!Path::new(&format!("{recv_root}/proj")).exists(), "not one file was written");
+        assert_eq!(fs::read_dir(format!("{recv_root}/sess/acct-b/org-b")).unwrap().count(), 0);
+        for d in [send_root, recv_root] { let _ = fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn a_crafted_record_cannot_add_fields_or_point_at_other_files() {
+        let send_root = tmp("send-evil");
+        let recv_root = tmp("recv-evil");
+        fs::create_dir_all(format!("{recv_root}/sess/acct-b/org-b")).unwrap();
+        let sid = "dddddddd-eeee-4fff-8000-111111111111";
+        let main = format!("{send_root}/{sid}.jsonl");
+        fs::write(&main, json!({ "type": "user", "cwd": "/Users/a/p", "timestamp": "2026-09-19T08:00:00.000Z",
+                                 "message": { "role": "user", "content": "hi" } }).to_string() + "\n").unwrap();
+        let rec = json!({
+            "sessionId": format!("local_{sid}"), "cliSessionId": "../../../../etc/passwd", "cwd": "/Users/a/p",
+            "title": "normal title", "completedTurns": "lots",
+            "bridgeSessionIds": ["../../../../.ssh/authorized_keys", sid, "never-sent"],
+            "priorCliSessionIds": ["../../x"],
+            "scratchPromptRecents": "/Users/victim", "someFieldClaudeNeverWrote": { "a": 1 },
+        });
+        let files = vec![(FileSpec { kind: Kind::Main, id: sid.into(), name: String::new(),
+                                     size: fs::metadata(&main).unwrap().len() }, main.clone())];
+        let (sent, got) = transfer(&recv_root, &rec, files, None);
+        assert_eq!(sent.unwrap(), "done");
+        let r: Value = serde_json::from_str(&fs::read_to_string(got.unwrap()["wrote"].as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(r["cliSessionId"], sid, "the chat's own session is the file that arrived");
+        assert!(r.get("bridgeSessionIds").is_none(), "no id that didn't arrive survives: {r}");
+        assert!(r.get("priorCliSessionIds").is_none());
+        assert!(r.get("scratchPromptRecents").is_none() && r.get("someFieldClaudeNeverWrote").is_none());
+        assert!(r["completedTurns"].is_u64(), "a non-number falls back to the transcript's count");
+        assert_eq!(r["title"], "normal title");
         for d in [send_root, recv_root] { let _ = fs::remove_dir_all(d); }
     }
 }
