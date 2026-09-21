@@ -29,7 +29,7 @@
   "description": "Move, copy and back up Claude Code chats across the accounts signed into a machine.",
   "url": "https://ahkamboh.github.io/ferry/",
   "downloadUrl": "https://github.com/ahkamboh/ferry/releases/latest",
-  "softwareVersion": "1.5.4",
+  "softwareVersion": "1.6.0",
   "license": "https://opensource.org/licenses/MIT",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
   "author": { "@type": "Person", "name": "Ali Hamza Kamboh", "url": "https://github.com/ahkamboh" }
@@ -117,13 +117,13 @@ footer a{color:var(--dim)}
 
   <div class="dl">
     <a class="btn p" href="https://github.com/ahkamboh/ferry/releases/latest/download/Ferry-macos-universal.zip">
-      Download for macOS <small>Universal · 5 MB</small></a>
+      Download for macOS <small>Universal · 6 MB</small></a>
     <a class="btn" href="https://github.com/ahkamboh/ferry/releases/latest/download/Ferry.exe">
-      Download for Windows <small>x64 · 5 MB</small></a>
+      Download for Windows <small>x64 · 6 MB</small></a>
     <a class="btn" href="https://github.com/ahkamboh/ferry">
       View source <small>MIT · free forever</small></a>
   </div>
-  <p class="meta">v1.5.4 · macOS 11+ and Windows 10+ · no account, no telemetry, no network</p>
+  <p class="meta">v1.6.0 · macOS 11+ and Windows 10+ · no account, no telemetry, nothing leaves your network</p>
 
   <figure>
     <img src="assets/screenshot.png" alt="Ferry showing three Claude accounts, a chat list, and a conversation rendered with tables and code blocks">
@@ -156,6 +156,7 @@ footer a{color:var(--dim)}
     <tr><th>Download</th><td>Save a whole conversation as Markdown, plain text or JSON, to any folder you choose.</td></tr>
     <tr><th>Delete and undelete</th><td>Deletes are reversible. Restore from another account or from the archive.</td></tr>
     <tr><th>Back up</th><td>One button archives every chat and every transcript, subagent transcripts included.</td></tr>
+    <tr><th>Send nearby</th><td>Send a chat to someone else's Ferry on the same Wi-Fi, Mac or Windows. You both check the same six-digit code before anything moves, and it's off until you turn it on.</td></tr>
   </table>
 </section>
 
@@ -198,7 +199,7 @@ python3 ferry-cli.py ui                      # the same interface in a browser</
   <p>Usually. Deleting writes a small marker rather than erasing the conversation, so as long as the transcript hasn't been pruned, Ferry can restore it from another account or from its archive.</p></div>
 
   <div class="q"><h3>Does it send anything anywhere?</h3>
-  <p>No. Ferry has no network code at all. It reads and writes local files, nothing else.</p></div>
+  <p>Not over the internet. Ferry reads and writes local files. Its one network feature, Nearby, only talks to other Ferry apps on your own network, is off until you turn it on, and sends a chat only after both people confirm the same code. The transfer is encrypted.</p></div>
 
   <div class="q"><h3>Why does my Mac or PC warn me when I open it?</h3>
   <p>Neither build is code-signed. On macOS, right-click the app → <strong>Open</strong> → <strong>Open</strong>. On Windows, SmartScreen → <strong>More info</strong> → <strong>Run anyway</strong>. Once each. If Windows says <strong>Smart App Control blocked an app</strong>, there is no Run anyway: use the CLI's <code>ui</code> command, which serves the same interface, or turn Smart App Control off in Windows Security.</p></div>

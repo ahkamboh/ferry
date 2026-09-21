@@ -2,7 +2,7 @@ name: Windows build
 
 # Builds Ferry.exe, the NSIS setup, and the MSI on a Windows runner, then
 # uploads them to the existing GitHub release whose tag matches the version
-# in tauri.conf.json (v1.5.4 today). Does not create tags.
+# in tauri.conf.json. Does not create tags.
 on:
   workflow_dispatch:
   push:
@@ -52,6 +52,10 @@ jobs:
           Write-Host "version=$version sha=$env:GITHUB_SHA"
           New-Item -ItemType Directory -Force -Path dist-win | Out-Null
           Copy-Item src-tauri/target/release/ferry.exe "dist-win/Ferry-$version-windows-x64.exe"
+          # The same file under a name that never changes, so the landing page's
+          # releases/latest/download/Ferry.exe keeps working across versions,
+          # the way Ferry-macos-universal.zip does for the Mac.
+          Copy-Item src-tauri/target/release/ferry.exe "dist-win/Ferry.exe"
           $setup = Get-Item src-tauri/target/release/bundle/nsis/*-setup.exe
           if (-not $setup) { throw "NSIS setup exe missing" }
           Copy-Item $setup.FullName "dist-win/Ferry-$version-windows-x64-setup.exe"
