@@ -11,14 +11,14 @@
 
 **Copy or move a chat from a Claude Code account you're signed out of into the one you're using now.**
 
-Claude picks up the old context instead of you explaining the project again — all on your machine. A 6 MB native app for macOS and Windows, plus a zero-dependency CLI.
+Claude picks up the old context instead of you explaining the project again — all on your machine. A native app for macOS and Windows, about a 6 MB download, plus a zero-dependency CLI.
 
 [![Download](https://img.shields.io/badge/%E2%86%93%20Download-macOS%20%7C%20Windows-d97757?style=for-the-badge)](https://github.com/ahkamboh/ferry/releases/latest)
 [![Website](https://img.shields.io/badge/Website-ahkamboh.github.io%2Fferry-1f1e1d?style=for-the-badge)](https://ahkamboh.github.io/ferry/)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-d97757.svg)](LICENSE)
 ![Platform: macOS and Windows](https://img.shields.io/badge/platform-macOS%2011%2B%20%7C%20Windows%2010%2B-1f1e1d)
-![Size: 6 MB](https://img.shields.io/badge/app-6%20MB-1f1e1d)
+![Download: 6 MB](https://img.shields.io/badge/download-6%20MB-1f1e1d)
 ![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202%20%2B%20Rust-1f1e1d)
 
 https://github.com/user-attachments/assets/2b1b0864-71e7-43c3-b78e-b5f65c6dde21
@@ -112,7 +112,8 @@ From [Releases](https://github.com/ahkamboh/ferry/releases/latest):
 |---|---|---|
 | **macOS 11+** | `Ferry-<version>-macos-universal.zip` | universal — Apple Silicon and Intel |
 | **Windows 10+** | `Ferry.exe` | single file, no installer, needs the WebView2 runtime |
-| **Windows 10+** | `Ferry-<version>-windows-x64-setup.exe` or `.msi` | installer: Start menu entry, uninstaller, no admin prompt |
+| **Windows 10+** | `Ferry-<version>-windows-x64-setup.exe` | installer for your user only: Start menu entry, uninstaller, no admin prompt |
+| **Windows 10+** | `Ferry-<version>-windows-x64.msi` | installer for everyone on the PC: asks for admin |
 
 Neither build is code-signed, so both operating systems will warn you once.
 
@@ -235,16 +236,16 @@ The archive is yours, outside anything Claude Code manages. Once a chat is in it
 
 ## Nearby
 
-Send a chat to another person's Ferry on the same network. It works between a Mac and a Windows PC in either direction.
+Send a chat, from Claude or from Cursor, to another person's Ferry on the same network. It works between a Mac and a Windows PC in either direction. A Cursor chat arrives as a Claude chat.
 
 1. Both people press **Nearby** in the top bar. It's off until you do.
 2. Open the chat, open **Send to**, pick the other computer under **Nearby**, and press **Send**. If it doesn't show up (some office and café Wi-Fi blocks discovery), type the address the other person's Nearby menu shows into the box at the bottom of Send to.
 3. A six-digit code appears on both screens. Check it matches theirs and press **Codes match**. Until you do, nothing about the chat has been sent, not even its title.
 4. The other person sees who's sending, what, and the same code. They pick the account it goes into, and a folder on their machine if yours doesn't exist there, then press **Accept**.
 
-The key exchange is commit-then-reveal, the way Bluetooth pairing does it, so a device sitting between you can't choose keys that make the two codes agree. A device pretending to be your friend gets only your machine's name: your friend never saw its code, so you cancel. The transfer is encrypted (X25519 and ChaCha20-Poly1305), and Ferry refuses any address outside your local network: private ranges and link-local only, so Tailscale and carrier-grade addresses are out too.
+The key exchange is commit-then-reveal, the way Bluetooth pairing does it, so a device sitting between you can't choose keys that make the two codes agree. A device pretending to be your friend gets only your machine's name: your friend never saw its code, so you cancel. The transfer is encrypted (X25519 and ChaCha20-Poly1305), and Ferry refuses any address outside your local network: private and link-local IPv4 only, so Tailscale and carrier-grade addresses are out too.
 
-Receiving works with Claude and Cursor open. A new chat is one Claude has never loaded, so there's nothing for it to overwrite, and it lists the chat the next time it starts. If the same chat is already in that account, only its conversation is updated while Claude is open; Ferry leaves the record alone, since Claude holds that one in memory. A chat deleted from that account is refused until you quit Claude, so Claude doesn't delete it again.
+Receiving works with Claude and Cursor open. A new chat is one Claude has never loaded, so there's nothing for it to overwrite, and it lists the chat the next time it starts. A chat already in that account is updated where it lives, in its own folder, keeping your title and its history; the sender's folder and name don't replace yours. While Claude is open only its conversation changes, since Claude holds the record in memory. A chat deleted from that account is refused until you quit Claude, so Claude doesn't delete it again.
 
 The receiving side decides everything before it writes anything. Ids and file names can't point outside Claude's folders, sizes are capped, files wait in a staging folder until all of them arrive, a chat can't take over another chat's record, and a different conversation under the same id is refused with nothing changed. A longer copy of the same conversation replaces the shorter one, after a snapshot.
 
@@ -252,7 +253,7 @@ Only accept chats from people you trust. A chat you continue in Claude becomes c
 
 ## Safety
 
-- **Writes are refused while the Claude app is running.** Quit Claude first; the title bar tells you when editing is off. The exception is receiving a chat over Nearby, which adds a chat Claude has never loaded.
+- **Writes are refused while the Claude app is running.** Quit Claude first; the title bar tells you when editing is off. The exception is receiving a chat over Nearby, which adds a chat Claude has never loaded, or brings a chat already in the account up to date (its conversation, not its record).
 - **Every change is snapshotted** into `~/.ferry/snapshots/` before it happens.
 - **Transcripts are never moved or edited**, with one exception: receiving a chat over Nearby writes its transcripts, and a longer copy of a conversation replaces the shorter one after a snapshot. Otherwise only the small metadata record moves. Importing a CLI or VS Code chat writes one; it never writes back into the transcript, and a chat that has no record yet cannot be renamed, moved or deleted. Setting a chat's folder gives its transcript a second name by hard link — the same file, still in the folder it came from, with nothing rewritten.
 - **Connector settings are stripped on copy.** MCP connector IDs belong to the account that created them and don't resolve elsewhere.

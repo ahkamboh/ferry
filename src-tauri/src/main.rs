@@ -90,26 +90,55 @@ fn enc_cwd_legacy(p: &str) -> String {
 /// Resolve a chat's working directory to its transcript folder.
 /// Folders written by different Claude Code versions coexist on disk, and very
 /// long paths are truncated with a "-<hash>" suffix, so try each in turn.
-fn project_dir(cwd: &str) -> String {
-    let root = proj();
+fn project_dir(cwd: &str) -> String { project_dir_in(&proj(), cwd) }
+
+/// Claude Code cuts an encoded folder name longer than 200 characters to its
+/// first 200 and adds "-<base36 hash>". Only such a name may stand in for the
+/// path: it has to share all 200 characters, and the path has to be long
+/// enough to have been cut. The rule used to accept any folder whose name,
+/// minus its last "-word", started the path, so a chat in .../GitHub/newapp
+/// was filed with .../GitHub/ferry.
+const CUT: usize = 200;
+fn project_dir_in(root: &str, cwd: &str) -> String {
     let current = enc_cwd(cwd);
     for cand in [&current, &enc_cwd_legacy(cwd)] {
         let d = format!("{}/{}", root, cand);
         if Path::new(&d).is_dir() { return d; }
     }
-    // truncated long path: "<prefix>-<base36 hash>"
-    if let Ok(rd) = fs::read_dir(&root) {
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if let Some((prefix, _hash)) = name.rsplit_once('-') {
-                if prefix.len() >= 24 && current.starts_with(prefix) {
-                    return format!("{}/{}", root, name);
+    if current.len() > CUT {
+        if let Ok(rd) = fs::read_dir(root) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if let Some((prefix, hash)) = name.rsplit_once('-') {
+                    if prefix.len() == CUT && !hash.is_empty() && current.starts_with(prefix) {
+                        return format!("{}/{}", root, name);
+                    }
                 }
             }
         }
     }
     format!("{}/{}", root, current)
 }
+
+#[cfg(test)]
+mod project_dir_tests {
+    #[test]
+    fn a_sibling_project_is_not_a_truncated_name() {
+        let root = std::env::temp_dir().join(format!("ferry-pdir-{}", std::process::id()));
+        let r = root.to_string_lossy().to_string();
+        std::fs::create_dir_all(root.join("-Users-bob-Documents-GitHub-ferry")).unwrap();
+        assert_eq!(super::project_dir_in(&r, "/Users/bob/Documents/GitHub/newapp"),
+                   format!("{r}/-Users-bob-Documents-GitHub-newapp"), "not the ferry project's folder");
+        // a real truncated folder is still found
+        let long = format!("/Users/bob/{}", "deep/".repeat(60));
+        let enc = super::enc_cwd(&long);
+        let cut = format!("{}-1a2b3c", &enc[..super::CUT]);
+        std::fs::create_dir_all(root.join(&cut)).unwrap();
+        assert_eq!(super::project_dir_in(&r, &long), format!("{r}/{cut}"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
 fn read_json(p: &str) -> Option<Value> {
     fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok())
 }
@@ -1061,10 +1090,38 @@ mod transcript_tests {
     }
 }
 
-/// A Claude Code transcript, written from turns that came from somewhere else.
-/// The shape is the one Claude Code appends: one JSON object a line, each
-/// linked to the one before it. entrypoint says where it really came from, so
-/// nothing later mistakes it for a session Claude Code ran itself.
+/// Claude Code transcript lines for turns that came from somewhere else. The
+/// shape is the one Claude Code appends: one JSON object a line, each linked to
+/// the one before it. entrypoint says where it really came from, so nothing
+/// later mistakes it for a session Claude Code ran itself.
+pub fn transcript_lines(cid: &str, cwd: &str, msgs: &[Value]) -> String {
+    let mut body = String::new();
+    let mut prev = Value::Null;
+    for (i, m) in msgs.iter().enumerate() {
+        let u = cursor_msg_uuid(cid, i);
+        body.push_str(&json!({
+            "parentUuid": prev, "isSidechain": false, "userType": "external",
+            "type": m["role"], "message": { "role": m["role"], "content": m["text"] },
+            "uuid": u, "timestamp": m["t"], "cwd": cwd, "sessionId": cid,
+            "gitBranch": "", "entrypoint": "cursor"
+        }).to_string());
+        body.push('\n');
+        prev = json!(u);
+    }
+    body
+}
+
+/// A Cursor conversation as transcript lines, written nowhere: Nearby sends
+/// these without leaving a transcript behind on this machine.
+pub fn cursor_transcript(chat: &Value) -> Result<String, String> {
+    let cid = chat["id"].as_str().ok_or("no conversation id")?;
+    let msgs = cursor_messages(cid);
+    if msgs.is_empty() { return Err("that Cursor chat has nothing readable in it".into()); }
+    Ok(transcript_lines(cid, chat["folder"].as_str().unwrap_or(""), &msgs))
+}
+
+/// A Cursor conversation written into ~/.claude/projects as a Claude Code
+/// transcript, so an account can claim it.
 pub fn cursor_write_transcript(chat: &Value) -> Result<String, String> {
     let cid = chat["id"].as_str().ok_or("no conversation id")?;
     let cwd = chat["folder"].as_str().unwrap_or("");
@@ -1090,21 +1147,7 @@ pub fn cursor_write_transcript(chat: &Value) -> Result<String, String> {
              Nothing was changed."));
     }
     snapshot(&path, "transcript");          // does nothing when there is no file yet
-
-    let mut body = String::new();
-    let mut prev = Value::Null;
-    for (i, m) in msgs.iter().enumerate() {
-        let u = cursor_msg_uuid(cid, i);
-        body.push_str(&json!({
-            "parentUuid": prev, "isSidechain": false, "userType": "external",
-            "type": m["role"], "message": { "role": m["role"], "content": m["text"] },
-            "uuid": u, "timestamp": m["t"], "cwd": cwd, "sessionId": cid,
-            "gitBranch": "", "entrypoint": "cursor"
-        }).to_string());
-        body.push('\n');
-        prev = json!(u);
-    }
-    fs::write(&path, body).map_err(|e| e.to_string())?;
+    fs::write(&path, transcript_lines(cid, cwd, &msgs)).map_err(|e| e.to_string())?;
     Ok(path)
 }
 
@@ -1571,7 +1614,10 @@ mod tests {
 
 }   // mod cursor
 
-use cursor::{cursor_chat, cursor_detail, cursor_full, cursor_running, cursor_scope, cursor_write_claude, cursor_write_transcript};
+use cursor::{cursor_chat, cursor_detail, cursor_full, cursor_running, cursor_scope, cursor_transcript,
+             cursor_write_claude, cursor_write_transcript};
+#[cfg(test)]
+use cursor::transcript_lines;
 
 /// Every <account>/<org> scope under the sessions root, found by walking the
 /// directory rather than by pattern matching. Returns (account, org, dir).

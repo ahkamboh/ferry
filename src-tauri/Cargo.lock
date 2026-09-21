@@ -868,7 +868,7 @@ dependencies = [
 
 [[package]]
 name = "ferry"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "chacha20poly1305",
  "glob",
