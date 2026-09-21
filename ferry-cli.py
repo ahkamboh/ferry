@@ -84,27 +84,65 @@ def scope_of(f):
     return parts[-3], parts[-2]
 
 def enc_cwd(p):
-    """Current rule, taken from the shipped CLI: every non-alphanumeric -> '-'."""
-    return re.sub(r"[^a-zA-Z0-9]", "-", p)
+    """Current rule, taken from the shipped CLI: every non-alphanumeric -> '-'.
+    Per UTF-16 unit, as JavaScript counts: an emoji is two units, so "--"."""
+    u = p.encode("utf-16-le")
+    return "".join(chr(c) if c < 128 and chr(c).isalnum() else "-"
+                   for c in (u[i] | (u[i+1] << 8) for i in range(0, len(u), 2)))
+
+CUT = 200
+def cc_folder(path):
+    """The folder name Claude Code gives a path (E and gz in its CLI): the
+    encoding, cut to 200 characters plus "-<base36 hash of the path>" when longer."""
+    e = enc_cwd(path)
+    if len(e) <= CUT: return e
+    h = 0
+    u = path.encode("utf-16-le")
+    for i in range(0, len(u), 2):
+        h = ((h << 5) - h + (u[i] | (u[i+1] << 8))) & 0xFFFFFFFF
+    if h >= 0x80000000: h -= 0x100000000
+    n, digits = abs(h), ""
+    while True:
+        digits = "0123456789abcdefghijklmnopqrstuvwxyz"[n % 36] + digits
+        n //= 36
+        if n == 0: break
+    return f"{e[:CUT]}-{digits}"
 
 def enc_cwd_legacy(p):
     """Older builds replaced only the separators and kept dots."""
     return re.sub(r"[/\\]", "-", p)
 
 def project_dir(cwd):
-    """Folders from different Claude Code versions coexist; long paths get
-    truncated with a -<hash> suffix. Try each shape before giving up."""
-    cur = enc_cwd(cwd)
-    for cand in (cur, enc_cwd_legacy(cwd)):
+    """Claude Code's own name first, then the uncut and older dot-keeping
+    encodings. A long path cut by another version shares the first 200
+    characters with a different hash. Nothing looser: the rule used to accept
+    any folder whose name minus its last "-word" started the path, so a chat in
+    .../GitHub/newapp was filed with .../GitHub/ferry."""
+    named, full = cc_folder(cwd), enc_cwd(cwd)
+    for cand in (named, full, enc_cwd_legacy(cwd)):
         d = os.path.join(PROJ, cand)
         if os.path.isdir(d): return d
+    if len(full) > CUT:
+        try:
+            for name in os.listdir(PROJ):
+                prefix, _, h = name.rpartition("-")
+                if len(prefix) == CUT and h and full.startswith(prefix):
+                    return os.path.join(PROJ, name)
+        except Exception: pass
+    return os.path.join(PROJ, named)
+
+def misfiled(cwd, sid):
+    """Where the rule before 1.6.2 filed a transcript whose own folder didn't
+    exist yet. Read only: set_folder moves a chat back into its own folder."""
+    cur = enc_cwd(cwd)
     try:
         for name in os.listdir(PROJ):
             prefix = name.rsplit("-", 1)[0]
             if len(prefix) >= 24 and cur.startswith(prefix):
-                return os.path.join(PROJ, name)
+                p = os.path.join(PROJ, name, f"{sid}.jsonl")
+                if os.path.exists(p): return p
     except Exception: pass
-    return os.path.join(PROJ, cur)
+    return None
 def ts(ms):
     try: return datetime.fromtimestamp(ms/1000).strftime("%Y-%m-%d %H:%M")
     except Exception: return "?"
@@ -255,8 +293,12 @@ def transcripts_for(rec):
             if x not in ids: ids.append(x)
     out = []
     for i in [x for x in ids if x]:
-        main = f"{d}/{i}.jsonl"
-        subs = sorted(glob.glob(f"{d}/{i}/subagents/*.jsonl"))
+        here = d
+        main = f"{here}/{i}.jsonl"
+        if not os.path.exists(main):
+            found = misfiled(cwd, i)
+            if found: main, here = found, os.path.dirname(found)
+        subs = sorted(glob.glob(f"{here}/{i}/subagents/*.jsonl"))
         out.append({"id": i, "path": main, "exists": os.path.exists(main),
                     "size": os.path.getsize(main) if os.path.exists(main) else 0,
                     "subagents": [{"path":s,"size":os.path.getsize(s)} for s in subs]})

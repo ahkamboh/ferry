@@ -644,7 +644,8 @@ function sendGroup(){
    nothing to leave behind, so it offers one action: give it a record in an
    account. The transcript is not touched. */
 function importGroup(others){
-  if(!others.length&&!nbAny())return '<span class=nosend>Sign in to an account in Claude to add this chat to it.</span>';
+  if(!others.length&&!nbAny())return '<span class=nosend>Sign in to an account in Claude to add this chat to it'+
+    (nbCanSend()?', or turn on Nearby to send it to another computer':'')+'.</span>';
   if(!nbPicked()&&!others.some(x=>key(x)===tgtKey))tgtKey=others.length?key(others[0]):NB.peers.length?"nb:"+NB.peers[0].key:null;
   if(nbPicked())return nbGroup(nbPicked(),"accts");
   if(!others.length)return nbEmptyGroup("accts");
@@ -1096,7 +1097,7 @@ const DEVICON='<svg viewBox="0 0 16 16" aria-hidden=true><rect x=1.5 y=2.5 width
   'stroke=currentColor stroke-width=1.4 /><path d="M5.5 14h5" stroke=currentColor stroke-width=1.4 stroke-linecap=round /></svg>';
 const NBICON='<svg width=13 height=13 viewBox="0 0 16 16" aria-hidden=true><path d="M2.2 6.2a8 8 0 0 1 11.6 0M4.4 8.6a4.8 4.8 0 0 1 7.2 0" '+
   'fill=none stroke=currentColor stroke-width=1.5 stroke-linecap=round /><circle cx=8 cy=11.6 r=1.3 fill=currentColor /></svg>';
-let NB={on:false,peers:[],addrs:[],incoming:null,outgoing:null},nbTimer=null,nbShown="",nbFolder=null;
+let NB={on:false,peers:[],addrs:[],incoming:null,outgoing:null},nbTimer=null,nbShown="",nbFolder=null,nbChose=false;
 let nbMenuMode="",nbAnchor=null,nbRight=false,nbSig="",nbPeerSig="";
 const nbLive=o=>!!o&&["connecting","waiting","confirm","sending"].includes(o.state);
 const nbInLive=i=>!!i&&["pairing","asking","receiving"].includes(i.state);
@@ -1119,7 +1120,7 @@ async function nbPoll(){
     if(!nbMenuMode&&$("#pmenu").className&&pk&&pk.getAttribute("aria-expanded")==="true")pickDraw();
     // a computer that was picked has gone: fall back to an account
     if(String(tgtKey).startsWith("nb:")&&!nbPeer(tgtKey)&&curD){tgtKey=null;drawRead(curD);}
-    else if(curD&&!dests().length&&chatPath)drawRead(curD);   // the row appears once there is somewhere to send
+    else if(curD&&chatPath&&!(isSrc(scope())?accts():dests()).length)drawRead(curD);   // the row appears once there is somewhere to send
   }
 }
 async function nbSet(on){
@@ -1222,6 +1223,7 @@ async function nbSend(to){
 async function nbAnswer(yes){
   let acct="",org="";
   if(yes){const s=$("#nbacct");if(!s)return;[acct,org]=s.value.split("|");}
+  nbChose=yes&&!!nbFolder;
   try{await iv("nearby_answer",{accept:yes,acct:acct,org:org,folder:yes?nbFolder:null});}
   catch(e){if(yes)return toast(String(e),true);}          // Claude open, say: the card stays up
   if(!yes){nbClose();setTimeout(()=>iv("nearby_dismiss").catch(()=>{}),300);return;}
@@ -1290,18 +1292,22 @@ function nbIncoming(inc){
           '<option value="'+esc(key(x))+'"'+(x===def?' selected':'')+'>'+esc(short(x))+
           (x.isCurrent?' · signed in':'')+'</option>').join("")+'</select></label>'
         :'<p class=warn>There is no Claude account on this machine to put it in yet.</p>')+
-      '<div class=nbrow><span>Folder</span><span class=nbf id=nbf title="'+esc(inc.cwd)+'">'+esc(inc.cwd||"none")+
-        (inc.cwdHere?'':' <em>not on this machine</em>')+'</span><button class="btn sm" id=nbpick>Choose…</button></div>'+
+      '<div class=nbrow><span>Folder</span><span class=nbf id=nbf title="'+esc(inc.cwd)+'">'+
+        (inc.cwd?esc(inc.cwd)+(inc.cwdHere?'':' <em>not on this machine</em>'):'<em>none yet: choose one to accept</em>')+
+        '</span><button class="btn sm" id=nbpick>Choose…</button></div>'+
       (S.appRunning?'<p class=nbnote>Claude is open, which is fine for a new chat: Claude lists it the next time it starts.</p>':'')+
       '<p class=nbnote>If the codes differ, decline: something else on the network is in the middle.</p>'+
       '<div class=askb>'+btn("an","Decline")+(acc.length?btn("ago","Accept",1):'')+'</div></div>';
     a.dataset.nb="in";a.className="on";wake();nbShown=base+":ask";nbFolder=null;
     $("#tfrom").classList.add("hl");
     $("#an").onclick=()=>nbAnswer(false);
-    if($("#ago")){$("#ago").onclick=()=>nbAnswer(true);$("#ago").focus();}
+    const needFolder=!inc.cwd;               // it would only fail after the whole transfer
+    if($("#ago")){$("#ago").onclick=()=>nbAnswer(true);$("#ago").disabled=needFolder;
+      if(!needFolder)$("#ago").focus();}
     $("#nbpick").onclick=async()=>{
       try{const f=await iv("pick_folder");
-        if(f){nbFolder=f;$("#nbf").textContent=f;$("#nbf").title=f;}}catch(e){toast(String(e),true);}};
+        if(f){nbFolder=f;$("#nbf").textContent=f;$("#nbf").title=f;
+          if($("#ago")){$("#ago").disabled=false;$("#ago").focus();}}}catch(e){toast(String(e),true);}};
     a.onclick=ev=>{if(ev.target===a)nbAnswer(false);};
     return;
   }
@@ -1333,7 +1339,7 @@ function nbIncoming(inc){
         :r.folderHere===false
         ?"Received. Its folder isn't on this machine: use the folder chip to point it at one."
         :r.recordKept?"Received from "+inc.from+". The conversation is updated; Claude shows the new part after it restarts."
-        :r.known?"Your copy of this chat is up to date."
+        :r.known?"Your copy of this chat is up to date."+(nbChose?" It stays in "+r.cwd+", where you already had it.":"")
         :r.claudeOpen?"Received from "+inc.from+". Claude lists it the next time it starts."
         :"Received from "+inc.from);
       setTimeout(()=>{if(nbOurs())nbClose();iv("nearby_dismiss").catch(()=>{});},1400);

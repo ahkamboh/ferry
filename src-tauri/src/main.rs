@@ -79,8 +79,10 @@ fn stamp() -> String {
 }
 /// Current Claude Code rule, read out of the shipped CLI:
 /// every character that is not [a-zA-Z0-9] becomes '-', runs are NOT collapsed.
+/// JavaScript strings are UTF-16, so a character outside the Basic
+/// Multilingual Plane (an emoji, say) is two units and becomes "--".
 fn enc_cwd(p: &str) -> String {
-    p.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+    p.encode_utf16().map(|u| if u < 128 && (u as u8).is_ascii_alphanumeric() { u as u8 as char } else { '-' }).collect()
 }
 /// Older builds only replaced the separators and left dots alone.
 fn enc_cwd_legacy(p: &str) -> String {
@@ -92,32 +94,69 @@ fn enc_cwd_legacy(p: &str) -> String {
 /// long paths are truncated with a "-<hash>" suffix, so try each in turn.
 fn project_dir(cwd: &str) -> String { project_dir_in(&proj(), cwd) }
 
-/// Claude Code cuts an encoded folder name longer than 200 characters to its
-/// first 200 and adds "-<base36 hash>". Only such a name may stand in for the
-/// path: it has to share all 200 characters, and the path has to be long
-/// enough to have been cut. The rule used to accept any folder whose name,
-/// minus its last "-word", started the path, so a chat in .../GitHub/newapp
-/// was filed with .../GitHub/ferry.
+/// The folder name Claude Code gives a path, as its CLI writes it:
+///   T=200; E(t){ e=t.replace(/[^a-zA-Z0-9]/g,"-");
+///               return e.length<=T ? e : `${e.slice(0,T)}-${Math.abs(gz(t)).toString(36)}` }
+///   gz(t){ e=0; for each UTF-16 unit: e=(e<<5)-e+unit|0; return e }
+/// The hash is of the path itself, not of its encoding.
 const CUT: usize = 200;
+fn cc_folder(path: &str) -> String {
+    let e = enc_cwd(path);
+    if e.len() <= CUT { return e; }
+    let mut h: i32 = 0;
+    for u in path.encode_utf16() { h = h.wrapping_shl(5).wrapping_sub(h).wrapping_add(u as i32); }
+    let mut n = (h as i64).unsigned_abs();
+    let mut digits = vec![];
+    loop { digits.push(b"0123456789abcdefghijklmnopqrstuvwxyz"[(n % 36) as usize]); n /= 36; if n == 0 { break; } }
+    digits.reverse();
+    format!("{}-{}", &e[..CUT], String::from_utf8(digits).unwrap())
+}
+
+/// Claude Code's own name first. Then the uncut encoding and the older
+/// dot-keeping one, which other versions (and Ferry before 1.6.2) wrote. For a
+/// long path, a folder cut by another version shares the first 200 characters
+/// with a different hash. Nothing looser: the rule used to accept any folder
+/// whose name, minus its last "-word", started the path, so a chat in
+/// .../GitHub/newapp was filed with .../GitHub/ferry.
 fn project_dir_in(root: &str, cwd: &str) -> String {
-    let current = enc_cwd(cwd);
-    for cand in [&current, &enc_cwd_legacy(cwd)] {
+    let named = cc_folder(cwd);
+    let full = enc_cwd(cwd);
+    for cand in [&named, &full, &enc_cwd_legacy(cwd)] {
         let d = format!("{}/{}", root, cand);
         if Path::new(&d).is_dir() { return d; }
     }
-    if current.len() > CUT {
+    if full.len() > CUT {
         if let Ok(rd) = fs::read_dir(root) {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 if let Some((prefix, hash)) = name.rsplit_once('-') {
-                    if prefix.len() == CUT && !hash.is_empty() && current.starts_with(prefix) {
+                    if prefix.len() == CUT && !hash.is_empty() && full.starts_with(prefix) {
                         return format!("{}/{}", root, name);
                     }
                 }
             }
         }
     }
-    format!("{}/{}", root, current)
+    format!("{}/{}", root, named)
+}
+
+/// Where the rule before 1.6.2 filed a transcript whose own folder didn't exist
+/// yet: any folder whose name, minus its last "-word", started the path. A Cursor
+/// convert, an import or a set_folder wrote there, so a transcript that isn't
+/// where it belongs is looked for there. Read only: set_folder is how a chat is
+/// moved back into its own folder.
+fn misfiled(cwd: &str, id: &str) -> Option<String> { misfiled_in(&proj(), cwd, id) }
+fn misfiled_in(root: &str, cwd: &str, id: &str) -> Option<String> {
+    let current = enc_cwd(cwd);
+    for e in fs::read_dir(root).ok()?.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let Some((prefix, _)) = name.rsplit_once('-') else { continue };
+        if prefix.len() >= 24 && current.starts_with(prefix) {
+            let p = format!("{}/{}/{}.jsonl", root, name, id);
+            if Path::new(&p).exists() { return Some(p); }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -129,12 +168,62 @@ mod project_dir_tests {
         std::fs::create_dir_all(root.join("-Users-bob-Documents-GitHub-ferry")).unwrap();
         assert_eq!(super::project_dir_in(&r, "/Users/bob/Documents/GitHub/newapp"),
                    format!("{r}/-Users-bob-Documents-GitHub-newapp"), "not the ferry project's folder");
-        // a real truncated folder is still found
+        // a long path's new folder gets Claude Code's own cut-and-hash name
         let long = format!("/Users/bob/{}", "deep/".repeat(60));
+        let named = super::project_dir_in(&r, &long);
+        assert_eq!(named, format!("{r}/{}", super::cc_folder(&long)));
+        // and a folder another version cut, with a different hash, is still found
         let enc = super::enc_cwd(&long);
         let cut = format!("{}-1a2b3c", &enc[..super::CUT]);
         std::fs::create_dir_all(root.join(&cut)).unwrap();
         assert_eq!(super::project_dir_in(&r, &long), format!("{r}/{cut}"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Claude Code's own folder names, computed by its JavaScript (T=200, gz) in
+    /// Node and pasted here: short, accented, emoji, Windows, and cut paths.
+    #[test]
+    fn folder_names_match_claude_code() {
+        for (path, want) in [
+            ("/Users/ali/code/app", "-Users-ali-code-app"),
+            ("/Users/ali/Projét", "-Users-ali-Proj-t"),
+            ("/Users/ali/😀 notes", "-Users-ali----notes"),
+            ("C:\\Users\\shakaib\\code\\api", "C--Users-shakaib-code-api"),
+            ("/Users/bob/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep", "-Users-bob-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-44fwdd"),
+            ("/Users/ali/😀/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/Projét", "-Users-ali----deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-deep-d-v8pkh9")
+        ] {
+            assert_eq!(super::cc_folder(path), want, "{path}");
+        }
+    }
+
+    /// This machine's own chats, read only: how many find their transcript in
+    /// their own folder, how many only where the old rule misfiled it, and how
+    /// many have none. Prints counts, nothing else. cargo test -- --ignored
+    #[test]
+    #[ignore]
+    fn real_chats_still_find_their_transcripts() {
+        let (mut direct, mut refound, mut gone) = (0, 0, 0);
+        for f in glob::glob(&format!("{}/*/*/local_*.json", super::sess())).unwrap().flatten() {
+            let Some(rec) = super::read_json(&f.to_string_lossy()) else { continue };
+            let Some(t) = super::transcripts_for(&rec).into_iter().next() else { continue };
+            let own = format!("{}/{}.jsonl", super::project_dir(rec["cwd"].as_str().unwrap_or("")), t["id"].as_str().unwrap_or(""));
+            if !t["exists"].as_bool().unwrap_or(false) { gone += 1; }
+            else if t["path"].as_str() == Some(own.as_str()) { direct += 1; }
+            else { refound += 1; }
+        }
+        eprintln!("direct {direct}, found where the old rule misfiled them {refound}, no transcript {gone}");
+    }
+
+    #[test]
+    fn a_transcript_the_old_rule_misfiled_is_still_found() {
+        let root = std::env::temp_dir().join(format!("ferry-misfiled-{}", std::process::id()));
+        let r = root.to_string_lossy().to_string();
+        let sib = root.join("-Users-bob-Documents-GitHub-ferry");
+        std::fs::create_dir_all(&sib).unwrap();
+        std::fs::write(sib.join("abc-123.jsonl"), "{}\n").unwrap();
+        let found = super::misfiled_in(&r, "/Users/bob/Documents/GitHub/newapp", "abc-123").unwrap();
+        assert!(found.ends_with("-Users-bob-Documents-GitHub-ferry/abc-123.jsonl"), "{found}");
+        assert!(super::misfiled_in(&r, "/Users/bob/Documents/GitHub/newapp", "other-id").is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -368,10 +457,17 @@ fn transcripts_for(rec: &Value) -> Vec<Value> {
         }
     }
     ids.iter().map(|id| {
-        let main = format!("{}/{}.jsonl", dir, id);
+        let mut here = dir.clone();
+        let mut main = format!("{}/{}.jsonl", here, id);
+        if !Path::new(&main).exists() {
+            if let Some(p) = misfiled(cwd, id) {
+                here = Path::new(&p).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or(here);
+                main = p;
+            }
+        }
         let size = fs::metadata(&main).map(|m| m.len()).unwrap_or(0);
         let mut subs = 0u64; let mut sub_bytes = 0u64;
-        if let Ok(rd) = glob::glob(&format!("{}/{}/subagents/*.jsonl", dir, id)) {
+        if let Ok(rd) = glob::glob(&format!("{}/{}/subagents/*.jsonl", here, id)) {
             for p in rd.flatten() {
                 subs += 1;
                 sub_bytes += fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
@@ -785,18 +881,20 @@ fn cursor_folders() -> std::collections::BTreeMap<String, String> {
         let Some(v) = read_json(&f.to_string_lossy()) else { continue };
         let Some(uri) = v["folder"].as_str() else { continue };
         let Some(rest) = uri.strip_prefix("file:///") else { continue };
-        // percent-decoding, for the spaces in "c:/Drive/Local LLM"
-        let mut p = String::new();
+        // percent-decoding, for the spaces in "c:/Drive/Local LLM". The bytes
+        // are UTF-8: collected as bytes, "Proj%C3%A9t" is Projét, not ProjÃ©t.
+        let mut raw: Vec<u8> = vec![];
         let b = rest.as_bytes();
         let mut i = 0;
         while i < b.len() {
             if b[i] == b'%' && i + 2 < b.len() {
                 if let Ok(n) = u8::from_str_radix(&rest[i+1..i+3], 16) {
-                    p.push(n as char); i += 3; continue;
+                    raw.push(n); i += 3; continue;
                 }
             }
-            p.push(b[i] as char); i += 1;
+            raw.push(b[i]); i += 1;
         }
+        let mut p = String::from_utf8_lossy(&raw).to_string();
         if cfg!(target_os = "windows") { p = p.replace('/', "\\"); } else { p.insert(0, '/'); }
         if let Some(d) = f.parent().and_then(|d| d.file_name()) {
             out.insert(d.to_string_lossy().to_string(), p);
@@ -2395,6 +2493,7 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
 }
 
 fn main() {
+    share::sweep();                     // staging a quit mid-transfer left behind
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![

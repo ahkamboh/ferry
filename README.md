@@ -212,7 +212,7 @@ What survives the crossing: every prompt and reply, in order, with their timesta
 Two deliberate limits:
 
 - **Quit Cursor before a write.** Its database is tens of GB and the app holds it open. SQLite will still open it read-write while Cursor is running, so Ferry checks the process (and `code.lock`) instead, and refuses. Reads stay `pragma query_only` / `SQLITE_OPEN_READ_ONLY`.
-- **Cursor -> Claude is the one place Ferry writes a transcript** rather than only the small record beside it, because there is no transcript to point at. The file is named after the Cursor conversation, so converting the same chat twice rewrites the one file.
+- **Cursor -> Claude is one of two places Ferry writes a transcript** (the other is receiving a chat over Nearby) rather than only the small record beside it, because there is no transcript to point at. The file is named after the Cursor conversation, so converting the same chat twice rewrites the one file.
 
 The sidebar shows the signed-in Cursor account the same way it shows a Claude one (name and email from Cursor's own ItemTable, not from the CLI login). A Claude chat drags onto Cursor and converts; a Cursor chat still drags onto a Claude account. Demo mode never points at the real Cursor database.
 
@@ -243,9 +243,9 @@ Send a chat, from Claude or from Cursor, to another person's Ferry on the same n
 3. A six-digit code appears on both screens. Check it matches theirs and press **Codes match**. Until you do, nothing about the chat has been sent, not even its title.
 4. The other person sees who's sending, what, and the same code. They pick the account it goes into, and a folder on their machine if yours doesn't exist there, then press **Accept**.
 
-The key exchange is commit-then-reveal, the way Bluetooth pairing does it, so a device sitting between you can't choose keys that make the two codes agree. A device pretending to be your friend gets only your machine's name: your friend never saw its code, so you cancel. The transfer is encrypted (X25519 and ChaCha20-Poly1305), and Ferry refuses any address outside your local network: private and link-local IPv4 only, so Tailscale and carrier-grade addresses are out too.
+The key exchange is commit-then-reveal, the way Bluetooth pairing does it, so a device sitting between you can't choose keys that make the two codes agree. A device pretending to be your friend gets only your machine's name: your friend never saw its code, so you cancel. The transfer is encrypted (X25519 and ChaCha20-Poly1305), and Ferry only connects to private (10/8, 172.16/12, 192.168/16) and link-local IPv4 addresses, or this machine. Tailscale's 100.64/10, the carrier-grade range and all other IPv6 are refused; a VPN that hands out private addresses counts as local.
 
-Receiving works with Claude and Cursor open. A new chat is one Claude has never loaded, so there's nothing for it to overwrite, and it lists the chat the next time it starts. A chat already in that account is updated where it lives, in its own folder, keeping your title and its history; the sender's folder and name don't replace yours. While Claude is open only its conversation changes, since Claude holds the record in memory. A chat deleted from that account is refused until you quit Claude, so Claude doesn't delete it again.
+Receiving works with Claude and Cursor open. A new chat is one Claude has never loaded, so there's nothing for it to overwrite, and it lists the chat the next time it starts. A chat already in that account is updated where it lives, in its own folder, keeping your title and its history; the sender's folder and name don't replace yours. While Claude is open only its conversation changes, since Claude holds the record in memory. If that account deleted the chat, it arrives as a new copy with an id of its own and the deleted one stays deleted; only a chat deleted under its own conversation id waits until you quit Claude, so Claude doesn't delete it again.
 
 The receiving side decides everything before it writes anything. Ids and file names can't point outside Claude's folders, sizes are capped, files wait in a staging folder until all of them arrive, a chat can't take over another chat's record, and a different conversation under the same id is refused with nothing changed. A longer copy of the same conversation replaces the shorter one, after a snapshot.
 
@@ -255,7 +255,7 @@ Only accept chats from people you trust. A chat you continue in Claude becomes c
 
 - **Writes are refused while the Claude app is running.** Quit Claude first; the title bar tells you when editing is off. The exception is receiving a chat over Nearby, which adds a chat Claude has never loaded, or brings a chat already in the account up to date (its conversation, not its record).
 - **Every change is snapshotted** into `~/.ferry/snapshots/` before it happens.
-- **Transcripts are never moved or edited**, with one exception: receiving a chat over Nearby writes its transcripts, and a longer copy of a conversation replaces the shorter one after a snapshot. Otherwise only the small metadata record moves. Importing a CLI or VS Code chat writes one; it never writes back into the transcript, and a chat that has no record yet cannot be renamed, moved or deleted. Setting a chat's folder gives its transcript a second name by hard link — the same file, still in the folder it came from, with nothing rewritten.
+- **Transcripts are never moved or edited**, with two exceptions: converting a Cursor chat into Claude writes its transcript, and receiving a chat over Nearby writes its transcripts, where a longer copy of a conversation replaces the shorter one after a snapshot. Otherwise only the small metadata record moves. Importing a CLI or VS Code chat writes one; it never writes back into the transcript, and a chat that has no record yet cannot be renamed, moved or deleted. Setting a chat's folder gives its transcript a second name by hard link — the same file, still in the folder it came from, with nothing rewritten.
 - **Connector settings are stripped on copy.** MCP connector IDs belong to the account that created them and don't resolve elsewhere.
 - **Deleting writes a tombstone**, the same marker Claude Code uses. The conversation stays on disk.
 
@@ -280,7 +280,7 @@ No. Only the small record is written, and the record is new — the transcript i
 Its transcript was pruned by Claude Code's cleanup. The record survives, the conversation doesn't. Backing up prevents this.
 
 **Does this send anything anywhere?**
-Not over the internet. Ferry reads and writes local files. The one network feature, Nearby, only talks to other Ferry apps on your local network, is off until you turn it on, and sends a chat only after both people confirm the same code.
+Not over the internet. Ferry reads and writes local files. The one network feature, Nearby, only talks to other Ferry apps on private and link-local addresses, is off until you turn it on, and sends a chat only after both people confirm the same code.
 
 **Does it work on Windows or Linux?**
 macOS and Windows are both built and tested. On Windows the layout is
