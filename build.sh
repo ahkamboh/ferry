@@ -62,6 +62,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSLocalNetworkUsageDescription</key><string>Nearby finds other Ferry apps on your Wi-Fi so you can send a chat to them. It stays on your local network and is off until you turn it on.</string>
+  <key>NSBonjourServices</key><array><string>_ferry._tcp</string></array>
 </dict></plist>
 PLIST
 

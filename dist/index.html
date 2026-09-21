@@ -288,15 +288,44 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 #pmenu em{margin-left:auto;font-style:normal;font-size:10.5px;color:var(--faint);font-weight:500}
 #pmenu b{margin-left:auto;color:var(--accent)}
 #pmenu em+b{margin-left:8px}
+/* Nearby: another Ferry on the same network */
+#nb{display:inline-flex;align-items:center;gap:6px}
+#nb[hidden],.codebox[hidden]{display:none}
+#nb svg{flex:none}
+#nb.on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 55%,var(--line))}
+.av.dev{background:var(--raise);color:var(--dim);border:1px solid var(--line)}
+.av.dev svg{width:15px;height:15px}
+#pmenu .nbhd{padding:7px 9px 9px;font-size:11.5px;line-height:1.55;color:var(--faint);border-bottom:1px solid var(--line);
+ margin-bottom:4px;max-width:300px}
+#pmenu .nbhd b{color:var(--ink);font-weight:620}
+#pmenu .nbsec{padding:6px 9px 2px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:600}
+#pmenu .nbnone{padding:10px 9px;font-size:12px;color:var(--faint);line-height:1.5;max-width:300px}
+#pmenu .mi.nop{cursor:default}
+#pmenu .mi.nop:hover{background:none}
+#pmenu .nbaddr{display:flex;gap:6px;padding:8px 5px 4px;border-top:1px solid var(--line);margin-top:4px}
+#pmenu .nbaddr input{flex:1;min-width:0;height:26px;padding:0 8px;border:1px solid var(--line);border-radius:7px;
+ background:var(--bg);font-size:12px}
+.codebox{margin:14px 0 2px;padding:10px 12px;border:1px dashed var(--line);border-radius:10px;display:flex;
+ align-items:center;justify-content:space-between;gap:12px}
+.codebox span{font-size:11.5px;color:var(--faint);line-height:1.4}
+.codebox .code{font:650 19px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.06em;color:var(--ink);white-space:nowrap}
+.nbrow{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12px}
+.nbrow>span:first-child{color:var(--faint);width:62px;flex:none}
+.nbrow select{flex:1;min-width:0;height:28px}
+.nbf{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+ font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim)}
+.nbf em{font-style:normal;color:var(--warn);font-family:-apple-system,"Segoe UI",sans-serif}
+.askc .nbnote{font-size:11px;color:var(--faint)}
 .route .who{transition:opacity .3s}
 .route .who.out{opacity:.45}                                   /* where a moved chat left */
 .askc .stat{margin-top:16px;text-align:center;font-size:13px;font-weight:560;color:var(--ink)}
 </style></head><body>
 
 <div id=bar>
-  <span class=brand><span class=nm>Ferry</span><span class=ver id=appver>1.5.4</span></span>
+  <span class=brand><span class=nm>Ferry</span><span class=ver id=appver>1.6.0</span></span>
   <span style="flex:1"></span>
   <span style="flex:1"></span><span id=lock role=group aria-label="App write locks"></span>
+  <button class=btn id=nb hidden onclick=nbMenu(event) aria-haspopup=menu><svg width=13 height=13 viewBox="0 0 16 16" aria-hidden=true><path d="M2.2 6.2a8 8 0 0 1 11.6 0M4.4 8.6a4.8 4.8 0 0 1 7.2 0" fill=none stroke=currentColor stroke-width=1.5 stroke-linecap=round /><circle cx=8 cy=11.6 r=1.3 fill=currentColor /></svg><span id=nbn>Nearby</span></button>
   <button class=btn onclick=vault() title="Copy every chat and transcript into ~/.ferry. Protects against Claude deleting a chat and against the 30-day transcript cleanup.">Back up</button>
   <button class=btn onclick=refresh() title="Re-read the accounts and chats from disk">Refresh</button>
 </div>
@@ -319,7 +348,7 @@ const fmt=b=>b>=1048576?(b/1048576).toFixed(1)+" MB":Math.max(1,Math.round(b/102
 const day=m=>m?new Date(m).toISOString().slice(0,10):"-";
 const hue=s=>{let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))%360;return h;};
 const APP_NAME="Ferry";                       // one place to change the product name
-const FALLBACK_VER="1.5.4";                   // used until scan() returns version
+const FALLBACK_VER="1.6.0";                   // used until scan() returns version
 const appVer=()=>(S&&S.version)||FALLBACK_VER;
 function paintVer(){const v=appVer();const el=$("#appver");if(el)el.textContent=v;document.title=APP_NAME+" "+v;}
 const WIN=/Windows/.test(navigator.userAgent);   // genuinely platform-specific bits only
@@ -480,7 +509,7 @@ if(WIN){
     m.style.top=Math.min(e.clientY,innerHeight-m.offsetHeight-8)+"px";});
 }
 // shared: the confirm card, its keys, and closing a chat exist on every platform
-const hideMenus=()=>{hideCtx();$("#pmenu").className="";
+const hideMenus=()=>{hideCtx();$("#pmenu").className="";nbMenuMode="";
   const p=$("#pick");if(p)p.setAttribute("aria-expanded","false");};
 document.addEventListener("click",hideMenus);
 addEventListener("blur",hideMenus);
@@ -944,6 +973,8 @@ function drawRead(d){
          '<option value=json>JSON</option></select>'+
        '<button class=btn onclick=doExport() title="Choose where to save the whole conversation. Currently defaults to '+
          esc((S.exportDir||"~/Downloads").replace(/^\/Users\/[^\/]+/,"~"))+'">Download</button>'+
+       (INAPP&&!String(chatPath).startsWith("cursor:")?'<button class=btn onclick=nbPick(event) '+
+         'title="Send this chat to another Ferry on your Wi-Fi">'+NBICON+' Nearby</button>':'')+
        (src?'':'<button class="btn d" onclick=doDelete()>Delete</button>');
   $("#read").innerHTML=
    '<div id=rhead'+(RICH?' class=x':'')+'>'+
@@ -1043,6 +1074,251 @@ async function backup(){
   catch(e){toast(String(e),true);}}
 function vault(){if(RICH)return busy("Backing up every chat…",backup,{now:true});
   toast("Backing up...");return backup();}
+/* ---------- Nearby ----------
+   Send a chat to another Ferry on the same network. Off until it is switched
+   on. While on, the Rust side announces this machine and listens; the page
+   polls it for the machines it has found and for a transfer under way, and puts
+   the cards up. Both cards show the code the two screens share: if the codes
+   differ, something on the network is in the middle, and the person cancels. */
+const DEVICON='<svg viewBox="0 0 16 16" aria-hidden=true><rect x=1.5 y=2.5 width=13 height=9 rx=1.6 fill=none '+
+  'stroke=currentColor stroke-width=1.4 /><path d="M5.5 14h5" stroke=currentColor stroke-width=1.4 stroke-linecap=round /></svg>';
+const NBICON='<svg width=13 height=13 viewBox="0 0 16 16" aria-hidden=true><path d="M2.2 6.2a8 8 0 0 1 11.6 0M4.4 8.6a4.8 4.8 0 0 1 7.2 0" '+
+  'fill=none stroke=currentColor stroke-width=1.5 stroke-linecap=round /><circle cx=8 cy=11.6 r=1.3 fill=currentColor /></svg>';
+let NB={on:false,peers:[],addrs:[],incoming:null,outgoing:null},nbTimer=null,nbShown="",nbFolder=null;
+let nbMenuMode="",nbAnchor=null,nbRight=false,nbSig="";
+const nbLive=o=>!!o&&["connecting","waiting","sending"].includes(o.state);
+const nbOurs=()=>{const a=$("#ask");return a.className==="on"&&!!a.dataset.nb;};
+const dev=(n,id)=>'<span class=who id='+id+'><span class="av dev">'+DEVICON+'</span><span>'+esc(n)+'</span></span>';
+const nbMe=()=>NB.name||"This machine";
+
+function nbLoop(){
+  const want=NB.on||nbLive(NB.outgoing)||(NB.incoming&&["asking","receiving"].includes(NB.incoming.state));
+  if(want&&!nbTimer)nbTimer=setInterval(nbPoll,800);
+  if(!want&&nbTimer){clearInterval(nbTimer);nbTimer=null;}
+}
+async function nbPoll(){
+  try{NB=await iv("nearby_state");}catch(e){return;}
+  nbDraw();nbCards();nbLoop();
+  if(nbMenuMode&&$("#pmenu").className)nbMenuDraw();     // the list fills in as machines answer
+}
+async function nbSet(on){
+  try{NB=await iv("nearby",{on:on});}catch(e){toast(String(e),true);return false;}
+  nbDraw();nbLoop();
+  if(on&&!NB.discovery)
+    toast("Nearby is on, but this network doesn't allow discovery. Send by typing the other machine's address.",true);
+  return true;
+}
+function nbDraw(){
+  const b=$("#nb");if(!b)return;
+  b.classList.toggle("on",!!NB.on);
+  $("#nbn").textContent=NB.on&&NB.peers.length?"Nearby · "+NB.peers.length:"Nearby";
+  b.title=NB.on?'On. Other Ferry apps on this network see this machine as "'+nbMe()+'"'+
+    (NB.addrs.length?"\nAddress: "+NB.addrs.join(", "):"")
+    :"Send chats to another Ferry on this Wi-Fi. Off until you turn it on.";
+}
+
+// The top-bar button: what Nearby is doing, and the switch.
+function nbMenu(e){e.stopPropagation();
+  if($("#pmenu").className&&nbMenuMode==="bar"){hideMenus();return;}
+  nbMenuMode="bar";nbAnchor=$("#nb");nbRight=true;nbSig="";nbMenuDraw();}
+// A chat's Nearby button: where to send it. Switches Nearby on if it was off.
+async function nbPick(e){e.stopPropagation();
+  if($("#pmenu").className&&nbMenuMode==="send"){hideMenus();return;}
+  nbMenuMode="send";nbAnchor=e.currentTarget;nbRight=true;nbSig="";nbMenuDraw();
+  if(!NB.on&&await nbSet(true)){nbSig="";nbMenuDraw();}}
+function nbMenuDraw(){
+  const m=$("#pmenu");
+  // redraw only when something changed, so a half-typed address keeps its focus
+  const sig=nbMenuMode+"|"+NB.on+"|"+NB.addrs.join()+"|"+NB.peers.map(p=>p.key).join();
+  if(sig===nbSig&&m.className)return;
+  nbSig=sig;
+  const hd='<div class=nbhd>'+(NB.on
+      ?'Visible as <b>'+esc(nbMe())+'</b>'+(NB.addrs.length?'<br>'+esc(NB.addrs.join(" · ")):'')
+      :'Nearby is off. Turn it on to send chats to, or get them from, another Ferry on this Wi-Fi.')+'</div>';
+  const peer=(p,cls)=>'<button class="mi'+cls+'" data-to="'+esc(p.key)+'"><span class="av dev">'+DEVICON+
+    '</span><span>'+esc(p.name)+'</span><em>'+esc(p.os)+'</em></button>';
+  let body;
+  if(nbMenuMode==="send"){
+    body=hd+(NB.on?(NB.peers.map(p=>peer(p,"")).join("")||
+        '<div class=nbnone>Looking for Ferry on this network…<br>Nearby has to be on over there too.</div>'):'')+
+      '<div class=nbaddr><input id=nbaddr placeholder="or type an address, e.g. 192.168.1.20" spellcheck=false '+
+        'autocomplete=off><button class="btn sm p" id=nbgo>Send</button></div>';
+  }else{
+    body=hd+(NB.on?(NB.peers.length?'<div class=nbsec>On this network</div>'+NB.peers.map(p=>peer(p," nop")).join("")
+        :'<div class=nbnone>No other Ferry found yet.</div>'):'')+
+      '<button class=mi id=nbtog><span class="av dev">'+NBICON+'</span><span>'+
+        (NB.on?'Turn Nearby off':'Turn Nearby on')+'</span></button>';
+  }
+  const old=$("#nbaddr"),typed=old?old.value:"",focused=old&&document.activeElement===old;
+  m.innerHTML=body;m.onclick=ev=>ev.stopPropagation();
+  const inp=$("#nbaddr");
+  if(inp){inp.value=typed;if(focused)inp.focus();
+    const go=()=>{const v=inp.value.trim();if(v)nbSend(v);};
+    $("#nbgo").onclick=go;
+    inp.onkeydown=ev=>{if(ev.key==="Enter"){ev.preventDefault();ev.stopPropagation();go();}};}
+  const tog=$("#nbtog");
+  if(tog)tog.onclick=async()=>{hideMenus();const on=!NB.on;
+    if(await nbSet(on)&&on)toast('Nearby is on. This machine shows up as "'+nbMe()+'".');};
+  if(nbMenuMode==="send")m.querySelectorAll(".mi[data-to]").forEach(x=>x.onclick=()=>nbSend(x.dataset.to));
+  m.className="on";
+  const b=nbAnchor.getBoundingClientRect(),w=m.offsetWidth;
+  m.style.left=(nbRight?Math.max(8,b.right-w):b.left)+"px";m.style.top=(b.bottom+4)+"px";
+}
+
+async function nbSend(to){
+  hideMenus();
+  if(!chatPath)return toast("Open a chat first",true);
+  try{await iv("nearby_send",{path:chatPath,to:to});}catch(e){return toast(String(e),true);}
+  try{NB=await iv("nearby_state");}catch(e){}
+  nbLoop();nbCards();
+}
+async function nbAnswer(yes){
+  let acct="",org="";
+  if(yes){const s=$("#nbacct");if(!s)return;[acct,org]=s.value.split("|");}
+  try{await iv("nearby_answer",{accept:yes,acct:acct,org:org,folder:yes?nbFolder:null});}
+  catch(e){if(yes)return toast(String(e),true);}          // Claude open, say: the card stays up
+  if(!yes){nbClose();setTimeout(()=>iv("nearby_dismiss").catch(()=>{}),300);return;}
+  if(NB.incoming){NB.incoming.state="receiving";nbCards();}   // the trip starts now, not at the next poll
+}
+function nbClose(){const a=$("#ask");closeAsk();delete a.dataset.nb;a.onclick=null;nbShown="";nbFolder=null;}
+function nbProgress(frac,text){
+  const m=$("#ask .route .mascot");
+  if(m){m.classList.add("own");m.innerHTML=drawMascot({look:1,cargo:Math.max(0,Math.min(1,frac))});}
+  const s=$("#astat");if(s&&text!=null)s.textContent=text;
+}
+function nbCheer(){const m=$("#ask .route .mascot");if(m)m.innerHTML=drawMascot(HAPPY);
+  const s=$("#tfrom"),t=$("#tto");if(s)s.classList.remove("hl");if(t)t.classList.add("hl");}
+function nbTrip(h,from,to,title){          // the card while bytes move, either way
+  const a=$("#ask");
+  a.innerHTML='<div class=askc role=dialog aria-modal=true aria-labelledby=askh>'+
+    '<h3 id=askh>'+esc(h)+'</h3><div class=ct>'+esc(title||"")+'</div>'+
+    '<div class=route>'+dev(from,"tfrom")+mascot()+dev(to,"tto")+'</div>'+
+    '<div class=codebox id=nbcode hidden><span></span><b class=code></b></div>'+
+    '<p class=stat id=astat></p><div class=askb></div></div>';
+  a.className="on";a.onclick=null;wake();$("#tfrom").classList.add("hl");
+}
+function nbResult(h,msg){
+  const a=$("#ask");
+  a.innerHTML='<div class=askc role=dialog aria-modal=true><h3>'+esc(h)+'</h3><p>'+esc(msg)+'</p>'+
+    '<div class=askb><button class="btn p" id=nbok>OK</button></div></div>';
+  a.dataset.nb="res";a.className="on";a.onclick=null;
+  $("#nbok").onclick=()=>{nbClose();iv("nearby_dismiss").then(s=>{NB=s;}).catch(()=>{});};
+  $("#nbok").focus();
+}
+
+function nbCards(){
+  const a=$("#ask"),inc=NB.incoming,out=NB.outgoing;
+  if(a.className==="on"&&!a.dataset.nb)return;              // a local copy's card is up: wait for it
+  if(busyOn)return;
+  // Escape, or a click outside, closed an offer: that is a no
+  if(!nbOurs()&&nbShown.startsWith("in:")&&nbShown.endsWith(":ask")&&inc&&inc.state==="asking"){
+    nbShown="";nbAnswer(false);return;}
+  const ended=s=>s==="declined"||s==="expired";
+  if(inc&&!ended(inc.state)&&!(inc.state==="asking"&&nbLive(out)))return nbIncoming(inc);
+  if(out&&out.state!=="cancelled")return nbOutgoing(out);
+  if(inc&&ended(inc.state)){
+    if(nbOurs())nbClose();
+    if(inc.state==="expired")toast("That offer ran out of time");
+    iv("nearby_dismiss").catch(()=>{});
+  }
+  if(out&&out.state==="cancelled")iv("nearby_dismiss").catch(()=>{});
+}
+
+function nbIncoming(inc){
+  const a=$("#ask"),base="in:"+inc.xfer;
+  if(inc.state==="asking"){
+    if(nbShown===base+":ask"&&nbOurs())return;
+    const acc=accts();
+    const def=acc.find(x=>x.isCurrent)||acc.find(x=>key(x)===scopeKey)||acc[0];
+    const btn=(i,t,p)=>'<button class="btn'+(p?' p':'')+'" id='+i+'>'+t+'</button>';
+    a.innerHTML='<div class=askc role=dialog aria-modal=true aria-labelledby=askh>'+
+      '<h3 id=askh>'+esc(inc.from)+' wants to send you a chat</h3>'+
+      '<div class=ct>'+esc(inc.title)+'</div>'+
+      '<div class=route>'+dev(inc.from,"tfrom")+mascot()+dev(nbMe(),"tto")+'</div>'+
+      '<div class=codebox><span>Check that '+esc(inc.from)+' shows the same code</span><b class=code>'+
+        esc(inc.code)+'</b></div>'+
+      '<p>'+(inc.turns||0)+' turns · '+fmt(inc.bytes||0)+' · '+inc.files+' file'+(inc.files===1?'':'s')+'</p>'+
+      (acc.length?'<label class=nbrow><span>Put it in</span><select id=nbacct>'+acc.map(x=>
+          '<option value="'+esc(key(x))+'"'+(x===def?' selected':'')+'>'+esc(short(x))+
+          (x.isCurrent?' · signed in':'')+'</option>').join("")+'</select></label>'
+        :'<p class=warn>There is no Claude account on this machine to put it in yet.</p>')+
+      '<div class=nbrow><span>Folder</span><span class=nbf id=nbf title="'+esc(inc.cwd)+'">'+esc(inc.cwd||"none")+
+        (inc.cwdHere?'':' <em>not on this machine</em>')+'</span><button class="btn sm" id=nbpick>Choose…</button></div>'+
+      (S.appRunning?'<p class=warn>Claude is open, so Ferry can\'t write yet. Quit Claude, then accept.</p>':'')+
+      '<p class=nbnote>If the codes differ, decline: something else on the network is in the middle.</p>'+
+      '<div class=askb>'+btn("an","Decline")+(acc.length?btn("ago","Accept",1):'')+'</div></div>';
+    a.dataset.nb="in";a.className="on";wake();nbShown=base+":ask";nbFolder=null;
+    $("#tfrom").classList.add("hl");
+    $("#an").onclick=()=>nbAnswer(false);
+    if($("#ago")){$("#ago").onclick=()=>nbAnswer(true);$("#ago").focus();}
+    $("#nbpick").onclick=async()=>{
+      try{const f=await iv("pick_folder");
+        if(f){nbFolder=f;$("#nbf").textContent=f;$("#nbf").title=f;}}catch(e){toast(String(e),true);}};
+    a.onclick=ev=>{if(ev.target===a)nbAnswer(false);};
+    return;
+  }
+  if(inc.state==="receiving"){
+    if(!(nbShown===base+":go"&&nbOurs())){
+      nbTrip("Receiving this chat…",inc.from,nbMe(),inc.title);a.dataset.nb="in";nbShown=base+":go";}
+    const f=inc.bytes?inc.got/inc.bytes:0;
+    return nbProgress(f,"Receiving… "+Math.round(f*100)+"%");
+  }
+  if(inc.state==="done"&&nbShown!==base+":done"){
+    nbShown=base+":done";
+    const r=inc.result||{};
+    if(nbOurs()){$("#askh").textContent="Chat received";nbProgress(1,"");nbCheer();}
+    (async()=>{
+      if(r.acct){scopeKey=r.acct+"|"+r.org;chatPath=r.wrote;}
+      await load();
+      if(chatPath){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){}}
+      toast(r.folderHere===false
+        ?"Received. Its folder isn't on this machine: use the folder chip to point it at one."
+        :"Received from "+inc.from);
+      setTimeout(()=>{if(nbOurs())nbClose();iv("nearby_dismiss").catch(()=>{});},1400);
+    })();
+    return;
+  }
+  if(inc.state==="error"&&nbShown!==base+":err"){
+    nbShown=base+":err";
+    nbResult("Couldn't take that chat",inc.msg||"Something went wrong.");
+  }
+}
+
+function nbOutgoing(out){
+  const a=$("#ask"),to=out.to||"the other machine";
+  if(nbLive(out)){
+    if(!(nbShown==="out"&&nbOurs())){
+      nbTrip("Sending to "+to,nbMe(),to,out.title);a.dataset.nb="out";nbShown="out";
+      $("#ask .askb").innerHTML='<button class=btn id=an>Cancel</button>';
+      $("#an").onclick=async()=>{try{NB=await iv("nearby_cancel");}catch(e){}
+        nbClose();iv("nearby_dismiss").catch(()=>{});};
+    }
+    $("#askh").textContent="Sending to "+to;
+    const t=$("#tto span:last-child");if(t)t.textContent=to;
+    if(out.code){const c=$("#nbcode");c.hidden=false;c.querySelector(".code").textContent=out.code;
+      c.querySelector("span").textContent=to+" should show the same code";}
+    const f=out.total?out.sent/out.total:0;
+    return nbProgress(out.state==="sending"?f:0,
+      out.state==="connecting"?"Connecting…"
+      :out.state==="waiting"?"Waiting for "+to+" to accept…"
+      :"Sending… "+Math.round(f*100)+"%");
+  }
+  if(out.state==="done"&&nbShown!=="out:done"){
+    nbShown="out:done";
+    if(nbOurs()){$("#askh").textContent="Sent to "+to;nbProgress(1,"");nbCheer();
+      const b=$("#ask .askb");if(b)b.innerHTML="";}
+    toast("Sent to "+to);
+    setTimeout(()=>{if(nbOurs())nbClose();iv("nearby_dismiss").catch(()=>{});},1400);
+    return;
+  }
+  if((out.state==="declined"||out.state==="error")&&nbShown!=="out:end"){
+    nbShown="out:end";
+    nbResult(out.state==="declined"?to+" didn't take it":"Couldn't send it",
+      out.msg||(out.state==="declined"?"They declined it, or didn't answer in time.":"Something went wrong."));
+  }
+}
+if(INAPP){$("#nb").hidden=false;iv("nearby_state").then(s=>{NB=s;nbDraw();nbLoop();}).catch(()=>{});}
+
 if(RICH){
   drawSkeleton();         // held at least 700 ms so a fast scan reads as loading, not a flicker
   load(new Promise(z=>setTimeout(z,700))).then(()=>{if(S.scopes.length)drawRead(null);})
