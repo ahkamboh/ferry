@@ -280,7 +280,7 @@ INDEX = f"{VAULT}/sessions.json"
 # bumped whenever what is read out of a transcript changes, so an index written
 # by an older Ferry is re-read rather than believed
 INDEX_V = 3
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 # fields that describe the account and its environment rather than the chat
 INHERIT = ("envScopeId", "permissionMode", "effort", "chromePermissionMode",
            "remoteControlAutoEligible", "classifierSummaryEnabled")

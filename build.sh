@@ -87,8 +87,10 @@ echo "-> done: $APP  ($(du -sh "$APP" | cut -f1))"
 if [ "$ZIP" = 1 ]; then
   Z="$ROOT/../Ferry-$VER-macos-universal.zip"
   rm -f "$Z"
-  # ditto, not zip: it keeps the resource forks and the signature intact.
-  (cd "$(dirname "$APP")" && ditto -c -k --sequesterRsrc --keepParent "$(basename "$APP")" "$Z")
+  # ditto, not zip: it keeps the bundle and its signature intact. No resource
+  # forks or extended attributes: the app uses neither, and with them unzip
+  # leaves a __MACOSX folder next to Ferry.app holding only this machine's xattrs.
+  (cd "$(dirname "$APP")" && ditto -c -k --norsrc --noextattr --keepParent "$(basename "$APP")" "$Z")
   echo "-> zip : $Z  ($(du -h "$Z" | cut -f1))"
 fi
 echo "   open \"$APP\""

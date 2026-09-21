@@ -2096,7 +2096,8 @@ fn import_session(path: String, acct: String, org: String) -> Result<Value, Stri
     guard()?;
     // A Cursor chat has no transcript to point at - its conversation lives in
     // Cursor's database - so one is written first, and from there it is an
-    // ordinary import. This is the only place Ferry writes a transcript.
+    // ordinary import. Nearby's receive (share.rs) is the other place Ferry
+    // writes a transcript.
     let path = match path.strip_prefix("cursor:") {
         None => path,
         Some(cid) => {

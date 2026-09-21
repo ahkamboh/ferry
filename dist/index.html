@@ -323,7 +323,7 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 </style></head><body>
 
 <div id=bar>
-  <span class=brand><span class=nm>Ferry</span><span class=ver id=appver>1.6.0</span></span>
+  <span class=brand><span class=nm>Ferry</span><span class=ver id=appver>1.6.1</span></span>
   <span style="flex:1"></span>
   <span style="flex:1"></span><span id=lock role=group aria-label="App write locks"></span>
   <button class=btn id=nb hidden onclick=nbMenu(event) aria-haspopup=menu><svg width=13 height=13 viewBox="0 0 16 16" aria-hidden=true><path d="M2.2 6.2a8 8 0 0 1 11.6 0M4.4 8.6a4.8 4.8 0 0 1 7.2 0" fill=none stroke=currentColor stroke-width=1.5 stroke-linecap=round /><circle cx=8 cy=11.6 r=1.3 fill=currentColor /></svg><span id=nbn>Nearby</span></button>
@@ -349,7 +349,7 @@ const fmt=b=>b>=1048576?(b/1048576).toFixed(1)+" MB":Math.max(1,Math.round(b/102
 const day=m=>m?new Date(m).toISOString().slice(0,10):"-";
 const hue=s=>{let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))%360;return h;};
 const APP_NAME="Ferry";                       // one place to change the product name
-const FALLBACK_VER="1.6.0";                   // used until scan() returns version
+const FALLBACK_VER="1.6.1";                   // used until scan() returns version
 const appVer=()=>(S&&S.version)||FALLBACK_VER;
 function paintVer(){const v=appVer();const el=$("#appver");if(el)el.textContent=v;document.title=APP_NAME+" "+v;}
 const WIN=/Windows/.test(navigator.userAgent);   // genuinely platform-specific bits only
@@ -620,9 +620,11 @@ const CHEVRON='<svg width=12 height=12 viewBox="0 0 12 12" aria-hidden=true><pat
   'stroke=currentColor stroke-width=1.6 stroke-linecap=round stroke-linejoin=round /></svg>';
 function sendGroup(){
   const others=dests();
-  if(!others.length&&!nbAny())return '<span class=nosend>Sign in to another account in Claude to copy chats to it.</span>';
-  if(!nbPicked()&&!others.some(x=>key(x)===tgtKey))tgtKey=others.length?key(others[0]):"nb:"+NB.peers[0].key;
+  if(!others.length&&!nbAny())return '<span class=nosend>Sign in to another account in Claude to copy chats to it'+
+    (nbCanSend()?', or turn on Nearby to send it to another computer':'')+'.</span>';
+  if(!nbPicked()&&!others.some(x=>key(x)===tgtKey))tgtKey=others.length?key(others[0]):NB.peers.length?"nb:"+NB.peers[0].key:null;
   if(nbPicked())return nbGroup(nbPicked(),"dests");
+  if(!others.length)return nbEmptyGroup("dests");
   const t=others.find(x=>key(x)===tgtKey),to=esc(short(t));
   if(isCur(t)) return '<span class=sendg><span class=cap>Send to</span>'+
     '<button class=pick id=pick data-list=dests onclick="pickMenu(event)" title="'+esc(whoTip(t))+
@@ -643,8 +645,9 @@ function sendGroup(){
    account. The transcript is not touched. */
 function importGroup(others){
   if(!others.length&&!nbAny())return '<span class=nosend>Sign in to an account in Claude to add this chat to it.</span>';
-  if(!nbPicked()&&!others.some(x=>key(x)===tgtKey))tgtKey=others.length?key(others[0]):"nb:"+NB.peers[0].key;
+  if(!nbPicked()&&!others.some(x=>key(x)===tgtKey))tgtKey=others.length?key(others[0]):NB.peers.length?"nb:"+NB.peers[0].key:null;
   if(nbPicked())return nbGroup(nbPicked(),"accts");
+  if(!others.length)return nbEmptyGroup("accts");
   const t=others.find(x=>key(x)===tgtKey),to=esc(short(t));
   return '<span class=sendg><span class=cap>Add to</span>'+
     '<button class=pick id=pick data-list=accts onclick="pickMenu(event)" title="'+esc(whoTip(t))+
@@ -1096,7 +1099,7 @@ const NBICON='<svg width=13 height=13 viewBox="0 0 16 16" aria-hidden=true><path
 let NB={on:false,peers:[],addrs:[],incoming:null,outgoing:null},nbTimer=null,nbShown="",nbFolder=null;
 let nbMenuMode="",nbAnchor=null,nbRight=false,nbSig="",nbPeerSig="";
 const nbLive=o=>!!o&&["connecting","waiting","confirm","sending"].includes(o.state);
-const nbInLive=i=>!!i&&["asking","confirming","receiving"].includes(i.state);
+const nbInLive=i=>!!i&&["pairing","asking","receiving"].includes(i.state);
 const nbOurs=()=>{const a=$("#ask");return a.className==="on"&&!!a.dataset.nb;};
 const dev=(n,id)=>'<span class=who id='+id+'><span class="av dev">'+DEVICON+'</span><span>'+esc(n)+'</span></span>';
 const nbMe=()=>NB.name||"This machine";
@@ -1144,7 +1147,7 @@ function nbMenu(e){e.stopPropagation();
 const nbCanSend=()=>INAPP&&!!chatPath&&!String(chatPath).startsWith("cursor:");
 const nbPeer=k=>k&&String(k).startsWith("nb:")?NB.peers.find(p=>"nb:"+p.key===k)||null:null;
 const nbPicked=()=>nbCanSend()?nbPeer(tgtKey):null;
-const nbAny=()=>nbCanSend()&&NB.on&&NB.peers.length>0;
+const nbAny=()=>nbCanSend()&&NB.on;           // on, even with no computer found: the address box lives here
 function nbGroup(p,list){
   return '<span class=sendg><span class=cap>Send to</span>'+
     '<button class=pick id=pick data-list='+list+' onclick="pickMenu(event)" title="'+esc(p.name+" · "+p.os)+
@@ -1154,6 +1157,12 @@ function nbGroup(p,list){
       '. They accept it, and you both check the same code first.">Send</button></span>';
 }
 function nbSendPicked(){const p=nbPicked();if(p)nbSend(p.key);}
+// Nothing to pick yet: the list still opens, for its address box
+function nbEmptyGroup(list){
+  return '<span class=sendg><span class=cap>Send to</span>'+
+    '<button class=pick id=pick data-list='+list+' onclick="pickMenu(event)" aria-haspopup=listbox aria-expanded=false>'+
+      '<span class="av dev">'+NBICON+'</span><span>A computer nearby</span>'+CHEVRON+'</button></span>';
+}
 function nbPickSection(sep){
   if(!nbCanSend())return "";
   const line=sep?'<div class=nbsep></div>':'';
@@ -1248,8 +1257,8 @@ function nbCards(){
   if(a.className==="on"&&!a.dataset.nb)return;              // a local copy's card is up: wait for it
   if(busyOn)return;
   // Escape, or a click outside, closed an offer: that is a no
-  if(!nbOurs()&&nbShown.startsWith("in:")&&nbShown.endsWith(":ask")&&inc&&inc.state==="asking"){
-    nbShown="";nbAnswer(false);return;}
+  if(!nbOurs()&&nbShown.startsWith("in:")&&(nbShown.endsWith(":ask")||nbShown.endsWith(":pair"))&&
+     inc&&(inc.state==="asking"||inc.state==="pairing")){nbShown="";nbAnswer(false);return;}
   const ended=s=>s==="declined"||s==="expired"||s==="cancelled";
   if(inc&&!ended(inc.state)&&!(inc.state==="asking"&&nbLive(out)))return nbIncoming(inc);
   if(out&&out.state!=="cancelled")return nbOutgoing(out);
@@ -1295,12 +1304,15 @@ function nbIncoming(inc){
     a.onclick=ev=>{if(ev.target===a)nbAnswer(false);};
     return;
   }
-  if(inc.state==="confirming"){
-    if(!(nbShown===base+":conf"&&nbOurs())){
-      nbTrip("Waiting for "+inc.from,inc.from,nbMe(),inc.title);a.dataset.nb="in";nbShown=base+":conf";
+  if(inc.state==="pairing"){
+    if(!(nbShown===base+":pair"&&nbOurs())){
+      nbTrip(inc.from+" wants to send you a chat",inc.from,nbMe(),"");a.dataset.nb="in";nbShown=base+":pair";
       const c=$("#nbcode");c.hidden=false;c.querySelector(".code").textContent=inc.code;
-      c.querySelector("span").textContent=inc.from+" is checking this code against their screen";}
-    return nbProgress(0,"Waiting for "+inc.from+" to confirm the code…");
+      c.querySelector("span").textContent="Check that "+inc.from+" shows this code";
+      $("#ask .askb").innerHTML='<button class=btn id=an>Decline</button>';
+      $("#an").onclick=()=>nbAnswer(false);
+      a.onclick=ev=>{if(ev.target===a)nbAnswer(false);};}
+    return nbProgress(0,"Waiting for "+inc.from+" to confirm the code on their side…");
   }
   if(inc.state==="receiving"){
     if(!(nbShown===base+":go"&&nbOurs())){
@@ -1318,6 +1330,7 @@ function nbIncoming(inc){
       if(chatPath){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){}}
       toast(r.folderHere===false
         ?"Received. Its folder isn't on this machine: use the folder chip to point it at one."
+        :r.recordKept?"Received from "+inc.from+". The conversation is updated; Claude shows the new part after it restarts."
         :r.claudeOpen?"Received from "+inc.from+". Claude lists it the next time it starts."
         :"Received from "+inc.from);
       setTimeout(()=>{if(nbOurs())nbClose();iv("nearby_dismiss").catch(()=>{});},1400);
@@ -1340,11 +1353,11 @@ function nbOutgoing(out){
         nbClose();iv("nearby_dismiss").catch(()=>{});};
     }
     const conf=out.state==="confirm";
-    $("#askh").textContent=conf?to+" accepted":"Sending to "+to;
+    $("#askh").textContent="Sending to "+to;
     const t=$("#tto span:last-child");if(t)t.textContent=to;
     const bx=$("#ask .askb");
     if(conf&&!$("#nbyes")){
-      bx.innerHTML='<button class=btn id=an>Cancel</button><button class="btn p" id=nbyes>Codes match, send</button>';
+      bx.innerHTML='<button class=btn id=an>Cancel</button><button class="btn p" id=nbyes>Codes match</button>';
       $("#an").onclick=async()=>{try{NB=await iv("nearby_cancel");}catch(e){}nbClose();iv("nearby_dismiss").catch(()=>{});};
       $("#nbyes").onclick=async()=>{$("#nbyes").disabled=true;
         try{NB=await iv("nearby_confirm",{yes:true});}catch(e){toast(String(e),true);}nbCards();};
@@ -1359,7 +1372,7 @@ function nbOutgoing(out){
     return nbProgress(out.state==="sending"?f:0,
       out.state==="connecting"?"Connecting…"
       :out.state==="waiting"?"Waiting for "+to+" to accept…"
-      :conf?"If the codes differ, cancel: it isn't really "+to+"."
+      :conf?"Nothing about the chat is sent until you confirm. If the codes differ, cancel: it isn't really "+to+"."
       :"Sending… "+Math.round(f*100)+"%");
   }
   if(out.state==="done"&&nbShown!=="out:done"){
