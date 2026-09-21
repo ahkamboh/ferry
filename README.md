@@ -9,9 +9,9 @@
   </a>
 </h1>
 
-**Copy or move a chat from a Claude Code account you're signed out of into the one you're using now.**
+**Your AI coding agents' chats, in whichever account and app you use.**
 
-Claude picks up the old context instead of you explaining the project again. Everything stays on your machine unless you send a chat to another computer on your Wi-Fi. A native app for macOS and Windows, about a 6 MB download, plus a zero-dependency CLI.
+Ferry finds every chat your coding agents left on this machine, across accounts and apps, and copies, moves or converts it to where you work now. The agent picks up the old context instead of you explaining the project again. Claude Code and Cursor today, Codex next. Everything stays on your machine unless you send a chat to another computer on your Wi-Fi. A native app for macOS and Windows, about a 6 MB download, plus a zero-dependency CLI.
 
 [![Download](https://img.shields.io/badge/%E2%86%93%20Download-macOS%20%7C%20Windows-d97757?style=for-the-badge)](https://github.com/ahkamboh/ferry/releases/latest)
 [![Website](https://img.shields.io/badge/Website-ahkamboh.github.io%2Fferry-1f1e1d?style=for-the-badge)](https://ahkamboh.github.io/ferry/)
@@ -29,7 +29,17 @@ https://github.com/user-attachments/assets/f8100da7-8bc3-46f7-a456-3894b17be269
 
 ---
 
+## Works with
+
+| Agent | What Ferry does |
+|---|---|
+| **Claude Code** (desktop app, CLI, VS Code) | lists every account's chats, even ones you're signed out of; copies, moves, renames, restores and backs them up; adds CLI and VS Code chats to an account |
+| **Cursor** | lists its chats, converts one into a Claude Code chat, and a Claude Code chat into Cursor |
+| **Codex** | coming next, not supported yet |
+
 ## The problem
+
+Coding agents keep your history on your machine, but tie it to one account or one app. Claude Code is where it hurts most.
 
 You sign into Claude Code with a second account — a work one, a new subscription, a client's — and your chat history is gone. Not deleted, just invisible: Claude Code keeps chat metadata **per account**, so every conversation you had is still on the disk, attached to an account you're no longer signed into.
 
