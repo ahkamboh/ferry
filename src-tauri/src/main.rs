@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod share;
+
 #[cfg(target_os = "windows")]
 fn home() -> String {
     std::env::var("USERPROFILE")
@@ -2303,12 +2305,52 @@ fn set_zoom(webview_window: tauri::WebviewWindow, scale: f64) -> Result<(), Stri
     webview_window.set_zoom(scale.clamp(0.5, 2.0)).map_err(|e| e.to_string())
 }
 
+/* ---------- Nearby: another Ferry on the same network ---------- */
+
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn nearby(on: bool) -> Result<Value, String> {
+    if on { share::start() } else { Ok(share::stop()) }
+}
+
+#[tauri::command]
+fn nearby_state() -> Value { share::state() }
+
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn nearby_send(path: String, to: String) -> Result<Value, String> { share::send(path, to) }
+
+#[tauri::command]
+fn nearby_answer(accept: bool, acct: String, org: String, folder: Option<String>) -> Result<Value, String> {
+    share::answer(accept, acct, org, folder)
+}
+
+#[tauri::command]
+fn nearby_cancel() -> Value { share::cancel() }
+
+#[tauri::command]
+fn nearby_dismiss() -> Value { share::dismiss() }
+
+/// A folder on this machine, for a chat that arrives from one where its folder
+/// has a path that means nothing here.
+#[tauri::command]
+async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog().file().set_directory(home()).pick_folder(move |p| { let _ = tx.send(p); });
+    match rx.recv().map_err(|e| e.to_string())? {
+        Some(fp) => Ok(Some(fp.into_path().map_err(|e| e.to_string())?.to_string_lossy().to_string())),
+        None => Ok(None),
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             scan, chat_detail, chat_full, export_chat, copy_chat, import_session, export_to_cursor,
-            set_folder, rename_chat, delete_chat, undelete_chat, set_label, run_vault, set_zoom
+            set_folder, rename_chat, delete_chat, undelete_chat, set_label, run_vault, set_zoom,
+            nearby, nearby_state, nearby_send, nearby_answer, nearby_cancel, nearby_dismiss, pick_folder
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch Ferry");
