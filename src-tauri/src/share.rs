@@ -406,6 +406,18 @@ impl Roots {
 #[derive(Debug, PartialEq)]
 enum Cmp { Same, Longer, Shorter, Differs }
 
+/// A transcript Ferry wrote from a Cursor conversation says so on every line.
+fn cursor_made(p: &str) -> bool {
+    let Ok(f) = fs::File::open(p) else { return false };
+    let mut line = String::new();
+    if std::io::BufRead::read_line(&mut std::io::BufReader::new(f), &mut line).is_err() { return false; }
+    serde_json::from_str::<Value>(&line).map(|v| v["entrypoint"].as_str() == Some("cursor")).unwrap_or(false)
+}
+
+fn lines(p: &str) -> usize {
+    fs::read(p).map(|b| b.iter().filter(|&&c| c == b'\n').count()).unwrap_or(0)
+}
+
 /// Two copies of one transcript. A transcript only ever grows, so when one is
 /// the start of the other they are the same conversation, one further along.
 fn compare(ours: &str, theirs: &str) -> Result<Cmp, String> {
@@ -481,6 +493,14 @@ fn commit(r: &Roots, stage: &str, offer: &Value, files: &[FileSpec], rec: &Value
     // Where its conversation goes: the folder this account already files it
     // under, or for a new chat the one picked here, else the sender's.
     let known = existing.as_ref().and_then(|e| e["cwd"].as_str()).filter(|c| !c.is_empty()).map(String::from);
+    // A chat here with no folder on its record gets one now, like a new chat,
+    // and its record is pointed at it. That is a record write, so not while
+    // Claude holds the record.
+    let repoint = existing.is_some() && known.is_none();
+    if repoint && claude_open {
+        return Err("that chat has no folder in this account yet. Quit Claude and send it again, \
+                    so Ferry can give it one. Nothing was changed.".into());
+    }
     let cwd = match known {
         Some(c) => c,
         None => {
@@ -522,6 +542,12 @@ fn commit(r: &Roots, stage: &str, offer: &Value, files: &[FileSpec], rec: &Value
         match compare(&to, &src)? {
             Cmp::Same | Cmp::Shorter => kept += 1,        // this machine already has all of it
             Cmp::Longer => plan.push((src, to, true)),    // the conversation went on since
+            // Both written by Ferry from the same Cursor conversation: Cursor folds
+            // a trailing tool run into the next reply once the chat goes on, so a
+            // later rendering doesn't start with the earlier one. It is still the
+            // same chat, and the one with at least as many lines is the newer.
+            Cmp::Differs if f.kind == Kind::Main && cursor_made(&to) && cursor_made(&src)
+                            && lines(&src) >= lines(&to) => plan.push((src, to, true)),
             Cmp::Differs => return Err(format!(
                 "this machine already has a different conversation under the same id ({}). \
                  Nothing was changed.", f.id)),
@@ -536,7 +562,7 @@ fn commit(r: &Roots, stage: &str, offer: &Value, files: &[FileSpec], rec: &Value
     // such as bridgeSessionIds is followed as a path by actions like set_folder.
     let info = read_session(&format!("{}/{}", stage, files[0].stage_name()))
         .ok_or("the conversation arrived but can't be read")?;
-    let num = |k: &str, fb: &Value| if rec[k].is_u64() || rec[k].is_i64() { rec[k].clone() } else { fb.clone() };
+    let num = |k: &str, fb: &Value| if rec[k].as_u64().map(|n| n > 0).unwrap_or(false) { rec[k].clone() } else { fb.clone() };
     let out: Option<Value> = match &existing {
         Some(_) if claude_open => None,
         Some(e) => {
@@ -545,6 +571,7 @@ fn commit(r: &Roots, stage: &str, offer: &Value, files: &[FileSpec], rec: &Value
                 let (have, got) = (e[k].as_u64().unwrap_or(0), v.as_u64().unwrap_or(0));
                 if got > have { e[k] = json!(got); }
             }
+            if repoint { e["cwd"] = json!(cwd); e["originCwd"] = json!(cwd); }
             Some(e)
         }
         None => {
@@ -598,8 +625,8 @@ fn commit(r: &Roots, stage: &str, offer: &Value, files: &[FileSpec], rec: &Value
                 replaced.push((keep, to.clone()));
                 r.snap(to, "nearby-replaced");
             }
+            if !*replace { added.push(to.clone()); }    // before the copy: a partial one goes too
             fs::copy(src, to).map_err(|e| e.to_string())?;
-            if !*replace { added.push(to.clone()); }
         }
         if let Some(o) = &out {
             r.snap(&dst, "nearby");
@@ -1024,9 +1051,16 @@ fn cursor_outgoing(cid: &str) -> Result<(Value, Vec<(FileSpec, String)>, Option<
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let p = format!("{dir}/{cid}.jsonl");
     if let Err(e) = fs::write(&p, &body) { let _ = fs::remove_dir_all(&dir); return Err(e.to_string()); }
-    let title = chat["title"].as_str().filter(|t| *t != "(unnamed)").unwrap_or("");
-    let rec = json!({ "sessionId": null, "cliSessionId": cid, "cwd": chat["folder"], "title": title,
-                      "createdAt": chat["created"], "lastActivityAt": chat["last"] });
+    let info = read_session(&p).unwrap_or_else(|| json!({}));
+    // what the other person sees on the card before accepting: Cursor's name,
+    // else the first prompt, and how many turns
+    let title = chat["title"].as_str().filter(|t| !t.is_empty() && *t != "(unnamed)")
+        .or(info["title"].as_str()).unwrap_or("(untitled)");
+    let mut rec = json!({ "sessionId": null, "cliSessionId": cid, "cwd": chat["folder"], "title": title,
+                          "completedTurns": info["turns"] });
+    for (k, v) in [("createdAt", &chat["created"]), ("lastActivityAt", &chat["last"])] {
+        if v.as_u64().map(|n| n > 0).unwrap_or(false) { rec[k] = v.clone(); }   // a zero is no date
+    }
     let spec = FileSpec { kind: Kind::Main, id: cid.into(), name: String::new(), size: body.len() as u64 };
     Ok((rec, vec![(spec, p)], Some(dir)))
 }
@@ -1056,6 +1090,15 @@ pub fn send(path: String, to: String) -> Result<Value, String> {
     let total: u64 = files.iter().map(|f| f.0.size).sum();
     {
         let mut g = st();
+        // Checked again under the same lock that claims it: converting a Cursor
+        // chat takes long enough for a second click to get in between.
+        let live = g.outgoing.as_ref()
+            .map(|o| matches!(o["state"].as_str(), Some("connecting" | "waiting" | "confirm" | "sending"))).unwrap_or(false);
+        if live {
+            drop(g);
+            if let Some(t) = &tmp { let _ = fs::remove_dir_all(t); }
+            return Err("already sending a chat".into());
+        }
         g.outgoing = Some(json!({
             "state": "connecting", "to": if shown.is_empty() { to.clone() } else { shown },
             "title": rec["title"], "sent": 0, "total": total, "code": "",
@@ -1107,6 +1150,21 @@ pub fn answer(accept: bool, acct: String, org: String, folder: Option<String>) -
         return Ok(json!({ "ok": true }));
     }
     Err("that offer has already gone".into())
+}
+
+/// Clear the staging folders a transfer left behind when Ferry quit mid-way.
+/// Only ones untouched for an hour: a live transfer writes to its own often,
+/// and a second copy of Ferry may be running.
+pub fn sweep() { sweep_in(&vault(), Duration::from_secs(3600)); }
+fn sweep_in(vault: &str, age: Duration) {
+    for d in ["outgoing", "incoming"] {
+        let Ok(rd) = fs::read_dir(format!("{vault}/{d}")) else { continue };
+        for e in rd.flatten() {
+            let old = e.metadata().and_then(|m| m.modified()).ok()
+                .and_then(|t| t.elapsed().ok()).map(|el| el >= age).unwrap_or(false);
+            if old { let _ = fs::remove_dir_all(e.path()); }
+        }
+    }
 }
 
 /// The sender's half of the code check.
@@ -1577,14 +1635,17 @@ mod tests {
             eprintln!("no Cursor chats on this machine"); return;
         };
         let cid = chat["id"].as_str().unwrap().to_string();
+        let before_own = Path::new(&format!("{}/{}.jsonl", project_dir(chat["folder"].as_str().unwrap_or("")), cid)).exists();
         let (rec, files, tmp) = cursor_outgoing(&cid).expect("a real Cursor chat converts");
         let dir = tmp.expect("a folder of its own");
         assert!(Path::new(&files[0].1).starts_with(&dir));
         let info = read_session(&files[0].1).expect("the lines read as a transcript");
         assert!(info["turns"].as_u64().unwrap() >= 1);
         assert_eq!(rec["cliSessionId"], cid);
-        assert!(!Path::new(&format!("{}/{}.jsonl", project_dir(rec["cwd"].as_str().unwrap_or("")), cid)).exists()
-                || true, "nothing is written into ~/.claude/projects by a send");
+        // cursor_outgoing already ran above: its folder is the only thing it made
+        let own = format!("{}/{}.jsonl", project_dir(rec["cwd"].as_str().unwrap_or("")), cid);
+        let had = before_own;
+        assert_eq!(Path::new(&own).exists(), had, "a send wrote nothing into ~/.claude/projects");
         let _ = fs::remove_dir_all(&dir);
         eprintln!("ok: {} turns, {} bytes", info["turns"], files[0].0.size);
     }
@@ -1723,5 +1784,80 @@ mod tests {
         assert!(!Path::new(&format!("{recv_root}/proj/{}/{id}.jsonl", enc_cwd("/Users/a/p"))).exists(),
                 "the transcript went back out with the failed record");
         for d in [send_root, recv_root] { let _ = fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn a_known_chat_with_no_folder_is_given_one() {
+        let send_root = tmp("send-nofolder");
+        let recv_root = tmp("recv-nofolder");
+        let id = "9a9a9a9a-0000-4000-8000-000000000009";
+        let scope = format!("{recv_root}/sess/acct-b/org-b");
+        fs::create_dir_all(&scope).unwrap();
+        let rp = format!("{scope}/local_nf.json");
+        fs::write(&rp, json!({ "sessionId": "local_nf", "cliSessionId": id, "cwd": "", "title": "Mine" }).to_string()).unwrap();
+        let (_, files) = one_file(&send_root, id, "/Users/a/landing");
+        let rec = json!({ "sessionId": "local_nf", "cliSessionId": id, "cwd": "/Users/a/landing" });
+        let (sent, got) = transfer(&recv_root, &rec, files, None);
+        assert_eq!(sent.unwrap(), "done");
+        assert_eq!(got.unwrap()["cwd"], "/Users/a/landing");
+        let r: Value = serde_json::from_str(&fs::read_to_string(&rp).unwrap()).unwrap();
+        assert_eq!(r["cwd"], "/Users/a/landing", "the record now points where the transcript went");
+        assert_eq!(r["title"], "Mine");
+        assert!(Path::new(&format!("{recv_root}/proj/{}/{id}.jsonl", enc_cwd("/Users/a/landing"))).exists());
+        for d in [send_root, recv_root] { let _ = fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn a_newer_rendering_of_a_cursor_chat_replaces_the_older() {
+        let send_root = tmp("send-rerender");
+        let recv_root = tmp("recv-rerender");
+        let cid = "0d0d0d0d-1e1e-4f2f-8a3a-505050505050";
+        let cwd = "/Users/ali/code/site";
+        let m = |r: &str, t: &str, ts: &str| json!({ "role": r, "text": t, "t": ts });
+        // sent while the chat ended on a tool run, then again once it went on
+        let before = transcript_lines(cid, cwd, &[m("user", "fix the bug", "2026-09-20T09:00:00.000Z"),
+                                                 m("assistant", "(read_file main.rs)", "2026-09-20T09:00:00.000Z")]);
+        let after = transcript_lines(cid, cwd, &[m("user", "fix the bug", "2026-09-20T09:00:00.000Z"),
+                                                m("assistant", "(read_file main.rs)\n\nFixed.", "2026-09-20T09:00:09.000Z"),
+                                                m("user", "thanks", "2026-09-20T09:01:00.000Z")]);
+        let send = |body: &str| {
+            let main = format!("{send_root}/{cid}.jsonl");
+            fs::write(&main, body).unwrap();
+            let files = vec![(FileSpec { kind: Kind::Main, id: cid.into(), name: String::new(), size: body.len() as u64 }, main)];
+            transfer(&recv_root, &json!({ "sessionId": null, "cliSessionId": cid, "cwd": cwd, "title": "" }), files, None)
+        };
+        fs::create_dir_all(format!("{recv_root}/sess/acct-b/org-b")).unwrap();
+        assert_eq!(send(&before).0.unwrap(), "done");
+        let (sent, got) = send(&after);
+        assert_eq!(sent.unwrap(), "done", "not refused as a different conversation");
+        assert_eq!(got.unwrap()["written"], 1);
+        assert_eq!(fs::read_to_string(format!("{recv_root}/proj/{}/{cid}.jsonl", enc_cwd(cwd))).unwrap(), after);
+        for d in [send_root, recv_root] { let _ = fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn a_zero_date_is_no_date() {
+        let send_root = tmp("send-zero");
+        let recv_root = tmp("recv-zero");
+        fs::create_dir_all(format!("{recv_root}/sess/acct-b/org-b")).unwrap();
+        let id = "0e0e0e0e-0000-4000-8000-000000000010";
+        let (_, files) = one_file(&send_root, id, "/Users/a/p");
+        let rec = json!({ "sessionId": null, "cliSessionId": id, "cwd": "/Users/a/p", "lastActivityAt": 0, "createdAt": 0 });
+        let (_, got) = transfer(&recv_root, &rec, files, None);
+        let r: Value = serde_json::from_str(&fs::read_to_string(got.unwrap()["wrote"].as_str().unwrap()).unwrap()).unwrap();
+        assert!(r["lastActivityAt"].as_u64().unwrap() > 1_000_000_000_000, "the transcript's own time, not 1970");
+        for d in [send_root, recv_root] { let _ = fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn stale_staging_is_swept_and_fresh_staging_kept() {
+        let v = tmp("sweep");
+        fs::create_dir_all(format!("{v}/outgoing/aaa")).unwrap();
+        fs::create_dir_all(format!("{v}/incoming/bbb")).unwrap();
+        sweep_in(&v, Duration::from_secs(3600));
+        assert!(Path::new(&format!("{v}/outgoing/aaa")).exists(), "a transfer that may be live is left alone");
+        sweep_in(&v, Duration::ZERO);
+        assert!(!Path::new(&format!("{v}/outgoing/aaa")).exists() && !Path::new(&format!("{v}/incoming/bbb")).exists());
+        let _ = fs::remove_dir_all(v);
     }
 }

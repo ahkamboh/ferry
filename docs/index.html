@@ -172,7 +172,7 @@ footer a{color:var(--dim)}
   </table>
   <p style="margin-top:18px">Because transcripts are account-agnostic, moving a chat only moves about <strong>10&nbsp;KB of JSON</strong>. A 45&nbsp;MB conversation transfers in the same instant as a tiny one, and nothing is duplicated on disk.</p>
   <div class="note">
-    <strong>Ferry never touches your conversations.</strong> It writes only the small metadata record, snapshots every file before changing it, and refuses to write at all while the Claude app is running.
+    <strong>Ferry leaves your conversations alone.</strong> It writes the small metadata record, and snapshots every file before changing it. Only two things write a transcript: converting a Cursor chat into Claude, and receiving a chat over Nearby. Receiving is the one write allowed while the Claude app is open; everything else waits until you quit it.
   </div>
 </section>
 
@@ -199,7 +199,7 @@ python3 ferry-cli.py ui                      # the same interface in a browser</
   <p>Usually. Deleting writes a small marker rather than erasing the conversation, so as long as the transcript hasn't been pruned, Ferry can restore it from another account or from its archive.</p></div>
 
   <div class="q"><h3>Does it send anything anywhere?</h3>
-  <p>Not over the internet. Ferry reads and writes local files. Its one network feature, Nearby, only talks to other Ferry apps on your own network, is off until you turn it on, and sends a chat only after both people confirm the same code. The transfer is encrypted.</p></div>
+  <p>Not over the internet. Ferry reads and writes local files. Its one network feature, Nearby, only talks to other Ferry apps on private and link-local addresses on your network, is off until you turn it on, and sends a chat only after both people confirm the same code. The transfer is encrypted.</p></div>
 
   <div class="q"><h3>Why does my Mac or PC warn me when I open it?</h3>
   <p>Neither build is code-signed. On macOS 15 and later, open Ferry once, then click <strong>Open Anyway</strong> in System Settings → Privacy &amp; Security (on macOS 14 and earlier, right-click the app → <strong>Open</strong>). On Windows, SmartScreen → <strong>More info</strong> → <strong>Run anyway</strong>. Once each. If Windows says <strong>Smart App Control blocked an app</strong>, there is no Run anyway: use the CLI's <code>ui</code> command, which serves the same interface, or turn Smart App Control off in Windows Security.</p></div>
