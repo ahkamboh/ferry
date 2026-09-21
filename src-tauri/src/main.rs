@@ -100,7 +100,17 @@ fn project_dir(cwd: &str) -> String { project_dir_in(&proj(), cwd) }
 ///   gz(t){ e=0; for each UTF-16 unit: e=(e<<5)-e+unit|0; return e }
 /// The hash is of the path itself, not of its encoding.
 const CUT: usize = 200;
+/// Claude Code names the folder after the NFC form of the path (its cwd is
+/// stored normalized), so "é" typed as e + combining accent is the same folder.
+fn nfc(path: &str) -> String { use unicode_normalization::UnicodeNormalization; path.nfc().collect() }
+/// Ferry before 1.6.2 encoded per character rather than per UTF-16 unit, so an
+/// emoji became one "-" rather than two. Folders it wrote that way are still
+/// read; nothing new is named this way.
+fn enc_cwd_chars(p: &str) -> String {
+    p.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
 fn cc_folder(path: &str) -> String {
+    let path = &nfc(path);
     let e = enc_cwd(path);
     if e.len() <= CUT { return e; }
     let mut h: i32 = 0;
@@ -120,17 +130,21 @@ fn cc_folder(path: &str) -> String {
 /// .../GitHub/newapp was filed with .../GitHub/ferry.
 fn project_dir_in(root: &str, cwd: &str) -> String {
     let named = cc_folder(cwd);
-    let full = enc_cwd(cwd);
-    for cand in [&named, &full, &enc_cwd_legacy(cwd)] {
+    let full = enc_cwd(&nfc(cwd));
+    for cand in [&named, &full, &enc_cwd(cwd), &enc_cwd_legacy(cwd), &enc_cwd_chars(cwd)] {
         let d = format!("{}/{}", root, cand);
         if Path::new(&d).is_dir() { return d; }
     }
+    // A long path cut by another Claude Code version: the same 200 characters,
+    // a different hash. Two long paths can share those 200, so the folder only
+    // counts if a transcript inside it ran in this path, as Claude Code checks.
     if full.len() > CUT {
         if let Ok(rd) = fs::read_dir(root) {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 if let Some((prefix, hash)) = name.rsplit_once('-') {
-                    if prefix.len() == CUT && !hash.is_empty() && full.starts_with(prefix) {
+                    if prefix.len() == CUT && !hash.is_empty() && full.starts_with(prefix)
+                       && ran_in(&e.path(), &full) {
                         return format!("{}/{}", root, name);
                     }
                 }
@@ -138,6 +152,21 @@ fn project_dir_in(root: &str, cwd: &str) -> String {
         }
     }
     format!("{}/{}", root, named)
+}
+
+/// Whether one of a folder's transcripts says it ran in a path encoding to `full`.
+fn ran_in(dir: &Path, full: &str) -> bool {
+    let Ok(rd) = fs::read_dir(dir) else { return false };
+    for e in rd.flatten().take(50) {
+        let p = e.path();
+        if p.extension().map(|x| x != "jsonl").unwrap_or(true) { continue; }
+        let Ok(f) = fs::File::open(&p) else { continue };
+        for line in BufReader::new(f).lines().take(20).flatten() {
+            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            if let Some(c) = v["cwd"].as_str() { return enc_cwd(&nfc(c)) == full; }
+        }
+    }
+    false
 }
 
 /// Where the rule before 1.6.2 filed a transcript whose own folder didn't exist
@@ -148,15 +177,45 @@ fn project_dir_in(root: &str, cwd: &str) -> String {
 fn misfiled(cwd: &str, id: &str) -> Option<String> { misfiled_in(&proj(), cwd, id) }
 fn misfiled_in(root: &str, cwd: &str, id: &str) -> Option<String> {
     let current = enc_cwd(cwd);
-    for e in fs::read_dir(root).ok()?.flatten() {
-        let name = e.file_name().to_string_lossy().to_string();
+    let chars = enc_cwd_chars(cwd);
+    for name in transcript_index(root).get(id)? {
         let Some((prefix, _)) = name.rsplit_once('-') else { continue };
-        if prefix.len() >= 24 && current.starts_with(prefix) {
-            let p = format!("{}/{}/{}.jsonl", root, name, id);
-            if Path::new(&p).exists() { return Some(p); }
+        if prefix.len() >= 24 && (current.starts_with(prefix) || chars.starts_with(prefix)) {
+            return Some(format!("{}/{}/{}.jsonl", root, name, id));
         }
     }
     None
+}
+
+/// Every transcript id in the projects tree, and the folders holding it. Built
+/// on the first miss and kept for a few seconds, so a scan reads the tree once
+/// however many transcripts are missing: Claude Code prunes transcripts while
+/// the desktop keeps their records, so misses only grow.
+fn transcript_index(root: &str) -> std::collections::HashMap<String, Vec<String>> {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    type Idx = (Instant, String, std::collections::HashMap<String, Vec<String>>);
+    static CACHE: OnceLock<Mutex<Option<Idx>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let mut g = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, r, idx)) = g.as_ref() {
+        if r == root && at.elapsed() < Duration::from_secs(5) { return idx.clone(); }
+    }
+    let mut idx: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    if let Ok(rd) = fs::read_dir(root) {
+        for d in rd.flatten() {
+            let folder = d.file_name().to_string_lossy().to_string();
+            let Ok(files) = fs::read_dir(d.path()) else { continue };
+            for f in files.flatten() {
+                let n = f.file_name().to_string_lossy().to_string();
+                if let Some(id) = n.strip_suffix(".jsonl") {
+                    idx.entry(id.to_string()).or_default().push(folder.clone());
+                }
+            }
+        }
+    }
+    *g = Some((Instant::now(), root.to_string(), idx.clone()));
+    idx
 }
 
 #[cfg(test)]
@@ -172,10 +231,21 @@ mod project_dir_tests {
         let long = format!("/Users/bob/{}", "deep/".repeat(60));
         let named = super::project_dir_in(&r, &long);
         assert_eq!(named, format!("{r}/{}", super::cc_folder(&long)));
-        // and a folder another version cut, with a different hash, is still found
+        // a folder another version cut, with a different hash, is found when its
+        // transcripts ran in this path, and not when they ran in another long
+        // path that shares the same first 200 characters
         let enc = super::enc_cwd(&long);
+        let other = format!("{long}service-b");
+        let cut_other = format!("{}-zzzzzz", &enc[..super::CUT]);
+        std::fs::create_dir_all(root.join(&cut_other)).unwrap();
+        std::fs::write(root.join(&cut_other).join("x.jsonl"),
+                       format!("{{\"type\":\"user\",\"cwd\":{:?}}}\n", other)).unwrap();
+        assert_eq!(super::project_dir_in(&r, &long), format!("{r}/{}", super::cc_folder(&long)),
+                   "another project's cut folder is not this path's");
         let cut = format!("{}-1a2b3c", &enc[..super::CUT]);
         std::fs::create_dir_all(root.join(&cut)).unwrap();
+        std::fs::write(root.join(&cut).join("y.jsonl"),
+                       format!("{{\"type\":\"user\",\"cwd\":{:?}}}\n", long)).unwrap();
         assert_eq!(super::project_dir_in(&r, &long), format!("{r}/{cut}"));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2185,7 +2255,15 @@ async fn set_folder(app: tauri::AppHandle, path: String, folder: Option<String>)
         }
     };
     if !Path::new(&dir).is_dir() { return Err(format!("no such folder: {}", dir)); }
-    if dir == was { return Ok(json!({ "ok": true, "unchanged": true, "cwd": dir })); }
+    // The same folder is still work to do when a transcript was found somewhere
+    // else, as the rule before 1.6.2 filed some: this moves it home.
+    let home_dir = project_dir(&dir);
+    let astray = transcripts_for(&rec).iter().any(|t| {
+        t["exists"].as_bool().unwrap_or(false)
+            && t["path"].as_str().and_then(|p| Path::new(p).parent())
+                .map(|p| p != Path::new(&home_dir)).unwrap_or(false)
+    });
+    if dir == was && !astray { return Ok(json!({ "ok": true, "unchanged": true, "cwd": dir })); }
 
     let dst_dir = project_dir(&dir);
     fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;

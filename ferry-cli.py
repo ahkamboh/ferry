@@ -22,7 +22,7 @@ Writes into Claude are refused while the Claude desktop app is running; writes
 into Cursor are refused while Cursor is running. Every mutation snapshots the
 affected rows or files into the vault first.
 """
-import json, os, re, shutil, sys, glob, subprocess, tempfile, threading, webbrowser, uuid
+import json, os, re, shutil, sys, glob, subprocess, tempfile, threading, time, unicodedata, webbrowser, uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -91,7 +91,17 @@ def enc_cwd(p):
                    for c in (u[i] | (u[i+1] << 8) for i in range(0, len(u), 2)))
 
 CUT = 200
+def nfc(path):
+    """Claude Code names the folder after the NFC form of the path."""
+    return unicodedata.normalize("NFC", path)
+
+def enc_cwd_chars(p):
+    """Ferry before 1.6.2 encoded per character, so an emoji was one "-".
+    Folders it wrote that way are still read; nothing new is named this way."""
+    return "".join(c if c.isascii() and c.isalnum() else "-" for c in p)
+
 def cc_folder(path):
+    path = nfc(path)
     """The folder name Claude Code gives a path (E and gz in its CLI): the
     encoding, cut to 200 characters plus "-<base36 hash of the path>" when longer."""
     e = enc_cwd(path)
@@ -118,30 +128,56 @@ def project_dir(cwd):
     characters with a different hash. Nothing looser: the rule used to accept
     any folder whose name minus its last "-word" started the path, so a chat in
     .../GitHub/newapp was filed with .../GitHub/ferry."""
-    named, full = cc_folder(cwd), enc_cwd(cwd)
-    for cand in (named, full, enc_cwd_legacy(cwd)):
+    named, full = cc_folder(cwd), enc_cwd(nfc(cwd))
+    for cand in (named, full, enc_cwd(cwd), enc_cwd_legacy(cwd), enc_cwd_chars(cwd)):
         d = os.path.join(PROJ, cand)
         if os.path.isdir(d): return d
+    # a long path cut by another version: only a folder whose transcripts ran
+    # in this path, since two long paths can share the first 200 characters
     if len(full) > CUT:
         try:
             for name in os.listdir(PROJ):
                 prefix, _, h = name.rpartition("-")
-                if len(prefix) == CUT and h and full.startswith(prefix):
+                if len(prefix) == CUT and h and full.startswith(prefix) and ran_in(os.path.join(PROJ, name), full):
                     return os.path.join(PROJ, name)
         except Exception: pass
     return os.path.join(PROJ, named)
 
+def ran_in(d, full):
+    for f in sorted(glob.glob(os.path.join(d, "*.jsonl")))[:50]:
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                for _, line in zip(range(20), fh):
+                    try: c = json.loads(line).get("cwd")
+                    except Exception: continue
+                    if c: return enc_cwd(nfc(c)) == full
+        except Exception: continue
+    return False
+
+_INDEX = [0.0, None]
+def transcript_index():
+    """Every transcript id and the folders holding it, read once and kept a few
+    seconds, so a scan reads the tree once however many transcripts are missing."""
+    if _INDEX[1] is None or time.time() - _INDEX[0] > 5:
+        idx = {}
+        try:
+            for d in os.listdir(PROJ):
+                try: names = os.listdir(os.path.join(PROJ, d))
+                except Exception: continue
+                for n in names:
+                    if n.endswith(".jsonl"): idx.setdefault(n[:-6], []).append(d)
+        except Exception: pass
+        _INDEX[0], _INDEX[1] = time.time(), idx
+    return _INDEX[1]
+
 def misfiled(cwd, sid):
     """Where the rule before 1.6.2 filed a transcript whose own folder didn't
     exist yet. Read only: set_folder moves a chat back into its own folder."""
-    cur = enc_cwd(cwd)
-    try:
-        for name in os.listdir(PROJ):
-            prefix = name.rsplit("-", 1)[0]
-            if len(prefix) >= 24 and cur.startswith(prefix):
-                p = os.path.join(PROJ, name, f"{sid}.jsonl")
-                if os.path.exists(p): return p
-    except Exception: pass
+    cur, chars = enc_cwd(cwd), enc_cwd_chars(cwd)
+    for name in transcript_index().get(sid, []):
+        prefix = name.rsplit("-", 1)[0]
+        if len(prefix) >= 24 and (cur.startswith(prefix) or chars.startswith(prefix)):
+            return os.path.join(PROJ, name, f"{sid}.jsonl")
     return None
 def ts(ms):
     try: return datetime.fromtimestamp(ms/1000).strftime("%Y-%m-%d %H:%M")
@@ -651,7 +687,9 @@ def op_set_folder(path, folder):
     if not folder: raise RuntimeError("say which folder to point it at")
     folder = os.path.abspath(folder)
     if not os.path.isdir(folder): raise RuntimeError(f"no such folder: {folder}")
-    if folder == was: return {"ok": True, "unchanged": True, "cwd": folder}
+    home = project_dir(folder)
+    astray = any(t["exists"] and os.path.dirname(t["path"]) != home for t in transcripts_for(rec))
+    if folder == was and not astray: return {"ok": True, "unchanged": True, "cwd": folder}
 
     dst_dir = project_dir(folder)
     os.makedirs(dst_dir, exist_ok=True)
