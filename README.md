@@ -112,6 +112,7 @@ From [Releases](https://github.com/ahkamboh/ferry/releases/latest):
 |---|---|---|
 | **macOS 11+** | `Ferry-<version>-macos-universal.zip` | universal — Apple Silicon and Intel |
 | **Windows 10+** | `Ferry.exe` | single file, no installer, needs the WebView2 runtime |
+| **Windows 10+** | `Ferry-<version>-windows-x64-setup.exe` or `.msi` | installer: Start menu entry, uninstaller, no admin prompt |
 
 Neither build is code-signed, so both operating systems will warn you once.
 
