@@ -323,7 +323,7 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 </style></head><body>
 
 <div id=bar>
-  <span class=brand><span class=nm>Ferry</span><span class=ver id=appver>1.6.1</span></span>
+  <span class=brand><span class=nm>Ferry</span><span class=ver id=appver>1.6.2</span></span>
   <span style="flex:1"></span>
   <span style="flex:1"></span><span id=lock role=group aria-label="App write locks"></span>
   <button class=btn id=nb hidden onclick=nbMenu(event) aria-haspopup=menu><svg width=13 height=13 viewBox="0 0 16 16" aria-hidden=true><path d="M2.2 6.2a8 8 0 0 1 11.6 0M4.4 8.6a4.8 4.8 0 0 1 7.2 0" fill=none stroke=currentColor stroke-width=1.5 stroke-linecap=round /><circle cx=8 cy=11.6 r=1.3 fill=currentColor /></svg><span id=nbn>Nearby</span></button>
@@ -349,7 +349,7 @@ const fmt=b=>b>=1048576?(b/1048576).toFixed(1)+" MB":Math.max(1,Math.round(b/102
 const day=m=>m?new Date(m).toISOString().slice(0,10):"-";
 const hue=s=>{let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))%360;return h;};
 const APP_NAME="Ferry";                       // one place to change the product name
-const FALLBACK_VER="1.6.1";                   // used until scan() returns version
+const FALLBACK_VER="1.6.2";                   // used until scan() returns version
 const appVer=()=>(S&&S.version)||FALLBACK_VER;
 function paintVer(){const v=appVer();const el=$("#appver");if(el)el.textContent=v;document.title=APP_NAME+" "+v;}
 const WIN=/Windows/.test(navigator.userAgent);   // genuinely platform-specific bits only
@@ -1142,9 +1142,10 @@ function nbDraw(){
 function nbMenu(e){e.stopPropagation();
   if($("#pmenu").className&&nbMenuMode==="bar"){hideMenus();return;}
   nbMenuMode="bar";nbAnchor=$("#nb");nbRight=true;nbSig="";nbMenuDraw();}
-/* In Send to. A chat from Cursor has no transcript on disk to send, so it
-   never lists computers. A computer is chosen as "nb:" + its mDNS name. */
-const nbCanSend=()=>INAPP&&!!chatPath&&!String(chatPath).startsWith("cursor:");
+/* In Send to, for Claude and Cursor chats alike: a Cursor chat is written out
+   in Claude Code's transcript shape for the send, and arrives as a Claude chat.
+   A computer is chosen as "nb:" + its mDNS name. */
+const nbCanSend=()=>INAPP&&!!chatPath;
 const nbPeer=k=>k&&String(k).startsWith("nb:")?NB.peers.find(p=>"nb:"+p.key===k)||null:null;
 const nbPicked=()=>nbCanSend()?nbPeer(tgtKey):null;
 const nbAny=()=>nbCanSend()&&NB.on;           // on, even with no computer found: the address box lives here
@@ -1291,7 +1292,7 @@ function nbIncoming(inc){
         :'<p class=warn>There is no Claude account on this machine to put it in yet.</p>')+
       '<div class=nbrow><span>Folder</span><span class=nbf id=nbf title="'+esc(inc.cwd)+'">'+esc(inc.cwd||"none")+
         (inc.cwdHere?'':' <em>not on this machine</em>')+'</span><button class="btn sm" id=nbpick>Choose…</button></div>'+
-      (S.appRunning?'<p class=nbnote>Claude is open. That\'s fine: the chat arrives now, and Claude lists it the next time it starts.</p>':'')+
+      (S.appRunning?'<p class=nbnote>Claude is open, which is fine for a new chat: Claude lists it the next time it starts.</p>':'')+
       '<p class=nbnote>If the codes differ, decline: something else on the network is in the middle.</p>'+
       '<div class=askb>'+btn("an","Decline")+(acc.length?btn("ago","Accept",1):'')+'</div></div>';
     a.dataset.nb="in";a.className="on";wake();nbShown=base+":ask";nbFolder=null;
@@ -1328,9 +1329,11 @@ function nbIncoming(inc){
       if(r.acct){scopeKey=r.acct+"|"+r.org;chatPath=r.wrote;}
       await load();
       if(chatPath){try{drawRead(await iv("chat_detail",{path:chatPath}));}catch(e){}}
-      toast(r.folderHere===false
+      toast(r.known&&r.written===0?"You already had all of this chat."
+        :r.folderHere===false
         ?"Received. Its folder isn't on this machine: use the folder chip to point it at one."
         :r.recordKept?"Received from "+inc.from+". The conversation is updated; Claude shows the new part after it restarts."
+        :r.known?"Your copy of this chat is up to date."
         :r.claudeOpen?"Received from "+inc.from+". Claude lists it the next time it starts."
         :"Received from "+inc.from);
       setTimeout(()=>{if(nbOurs())nbClose();iv("nearby_dismiss").catch(()=>{});},1400);
