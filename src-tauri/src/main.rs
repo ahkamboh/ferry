@@ -231,6 +231,33 @@ fn indexed_folders(root: &str, id: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
+mod archive_tests {
+    #[test]
+    fn restore_takes_the_newest_kept_copy_backup_or_delete_snapshot() {
+        let v = std::env::temp_dir().join(format!("ferry-arch-{}", std::process::id()));
+        let vs = v.to_string_lossy().to_string();
+        let id = "local_1111aaaa-0000-4000-8000-000000000001";
+        let put = |rel: &str, title: &str| {
+            let p = v.join(rel); std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, format!("{{\"title\":{:?}}}", title)).unwrap();
+        };
+        assert!(super::archived_copy_in(&vs, id).is_none(), "nothing kept yet");
+        put(&format!("chats/20260901-100000/acct-a/{id}.json"), "from a backup");
+        assert!(super::archived_copy_in(&vs, id).unwrap().to_string_lossy().contains("chats/20260901"));
+        // deleted in Ferry after that backup: the delete snapshot is the newer copy
+        put(&format!("snapshots/20260905-120000-delete-{id}.json"), "at delete");
+        assert!(super::archived_copy_in(&vs, id).unwrap().to_string_lossy().contains("-delete-"));
+        // and a later backup wins again
+        put(&format!("chats/20260910-080000/acct-a/{id}.json"), "later backup");
+        assert!(super::archived_copy_in(&vs, id).unwrap().to_string_lossy().contains("chats/20260910"));
+        // other snapshots of the same record (a rename, a move) are not restore sources
+        put(&format!("snapshots/20260911-090000-rename-{id}.json"), "renamed");
+        assert!(super::archived_copy_in(&vs, id).unwrap().to_string_lossy().contains("chats/20260910"));
+        let _ = std::fs::remove_dir_all(&v);
+    }
+}
+
+#[cfg(test)]
 mod project_dir_tests {
     #[test]
     fn a_sibling_project_is_not_a_truncated_name() {
@@ -332,6 +359,26 @@ mod project_dir_tests {
         assert!(super::misfiled_in(&r, "/Users/bob/Documents/GitHub/newapp", "other-id").is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
+}
+
+/// The newest copy of a chat's record that Ferry kept: a backup
+/// (chats/<stamp>/<account>/<id>.json) or the snapshot Delete takes
+/// (snapshots/<stamp>-delete-<id>.json), whichever is later. Without the second,
+/// a chat deleted in Ferry before any backup could never be restored.
+fn archived_copy(id: &str) -> Option<PathBuf> { archived_copy_in(&vault(), id) }
+fn archived_copy_in(vault: &str, id: &str) -> Option<PathBuf> {
+    let (v, i) = (glob::Pattern::escape(vault), glob::Pattern::escape(id));
+    let backups = glob::glob(&format!("{v}/chats/*/*/{i}.json")).ok()?.flatten()
+        .filter_map(|p| Some((p.parent()?.parent()?.file_name()?.to_string_lossy().to_string(), p)));
+    let deletes = glob::glob(&format!("{v}/snapshots/*-delete-{i}.json")).ok()?.flatten()
+        .filter_map(|p| Some((p.file_name()?.to_string_lossy().chars().take(15).collect::<String>(), p)));
+    backups.chain(deletes).max_by(|a, b| a.0.cmp(&b.0)).map(|(_, p)| p)
+}
+
+/// The title of a chat's newest kept copy.
+fn archived_title(id: &str) -> Option<String> {
+    read_json(&archived_copy(id)?.to_string_lossy())?["title"].as_str()
+        .filter(|t| !t.is_empty()).map(str::to_string)
 }
 
 fn read_json(p: &str) -> Option<Value> {
@@ -1976,6 +2023,20 @@ fn scan() -> Value {
                               "path": p.to_string_lossy() }));
         }
     }
+    // A deleted chat is named by its title where one survives: in the account a
+    // move took it to, else in the newest archived copy, which Restore would use.
+    let titles: std::collections::HashMap<String, String> = scopes.values()
+        .flat_map(|s| s["chats"].as_array().cloned().unwrap_or_default())
+        .filter_map(|c| Some((c["id"].as_str()?.to_string(), c["title"].as_str()?.to_string())))
+        .collect();
+    for s in scopes.values_mut() {
+        for d in s["deleted"].as_array_mut().unwrap() {
+            let id = d["id"].as_str().unwrap_or("").to_string();
+            if let Some(t) = titles.get(&id).cloned().or_else(|| archived_title(&id)) {
+                d["title"] = json!(t);
+            }
+        }
+    }
     let mut list: Vec<Value> = scopes.into_values().collect();
     for s in list.iter_mut() {
         let c = s["chats"].as_array_mut().unwrap();
@@ -2489,15 +2550,10 @@ fn undelete_chat(acct: String, org: String, id: String) -> Result<Value, String>
     guard()?;
     let short = id.trim_start_matches("local_").to_string();
     let mut src: Option<PathBuf> = None;
-    if let Ok(p) = glob::glob(&format!("{}/*/*/{}.json", sess(), id)) {
+    if let Ok(p) = glob::glob(&format!("{}/*/*/{}.json", glob::Pattern::escape(&sess()), glob::Pattern::escape(&id))) {
         for c in p.flatten() { src = Some(c); break; }
     }
-    if src.is_none() {
-        if let Ok(p) = glob::glob(&format!("{}/chats/*/*/{}.json", vault(), id)) {
-            let mut all: Vec<PathBuf> = p.flatten().collect();
-            all.sort(); src = all.pop();
-        }
-    }
+    if src.is_none() { src = archived_copy(&id); }
     let src = src.ok_or("no surviving copy in any account or the vault")?;
     let mut rec = read_json(&src.to_string_lossy()).ok_or("copy unreadable")?;
     if let Some(o) = rec.as_object_mut() { for k in ACCOUNT_SCOPED { o.remove(k); } }

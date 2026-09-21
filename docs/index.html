@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ferry — move your Claude Code chats between accounts</title>
-<meta name="description" content="Switched Claude accounts and lost your chat history? It's still on disk. Ferry lists every Claude Code account on your machine, moves chats between them, and keeps an archive the 30-day cleanup can't touch. Free, MIT, macOS and Windows.">
+<meta name="description" content="Switched Claude accounts and lost your chat history? It's still on disk. Ferry moves chats between your Claude Code accounts, finds your CLI, VS Code and Cursor chats, sends one to another computer on your Wi-Fi, and keeps an archive the 30-day cleanup can't touch. Free, MIT, macOS and Windows.">
 <link rel="canonical" href="https://ahkamboh.github.io/ferry/">
 <link rel="icon" href="assets/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
@@ -13,11 +13,15 @@
 <meta property="og:url" content="https://ahkamboh.github.io/ferry/">
 <meta property="og:title" content="Ferry — move your Claude Code chats between accounts">
 <meta property="og:description" content="Your chats aren't gone, they're attached to an account you're not signed into. Ferry moves them, and archives what the 30-day cleanup would delete.">
-<meta property="og:image" content="https://ahkamboh.github.io/ferry/assets/screenshot.png">
+<meta property="og:image" content="https://ahkamboh.github.io/ferry/assets/ferry-demo-poster.png">
+<meta property="og:video" content="https://ahkamboh.github.io/ferry/assets/ferry-demo.mp4">
+<meta property="og:video:type" content="video/mp4">
+<meta property="og:video:width" content="1600">
+<meta property="og:video:height" content="1084">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Ferry — move your Claude Code chats between accounts">
 <meta name="twitter:description" content="Your chats aren't gone, they're attached to an account you're not signed into.">
-<meta name="twitter:image" content="https://ahkamboh.github.io/ferry/assets/screenshot.png">
+<meta name="twitter:image" content="https://ahkamboh.github.io/ferry/assets/ferry-demo-poster.png">
 
 <script type="application/ld+json">
 {
@@ -26,7 +30,7 @@
   "name": "Ferry",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS 11+, Windows 10+",
-  "description": "Move, copy and back up Claude Code chats across the accounts signed into a machine.",
+  "description": "Move, copy and back up Claude Code chats across the accounts signed into a machine; add CLI, VS Code and Cursor chats to an account; send a chat to another computer on the same Wi-Fi.",
   "url": "https://ahkamboh.github.io/ferry/",
   "downloadUrl": "https://github.com/ahkamboh/ferry/releases/latest",
   "softwareVersion": "1.6.2",
@@ -79,7 +83,7 @@ header .sub{margin:14px auto 0;max-width:600px}
 .meta{font-size:.83rem;color:var(--faint);margin-top:6px}
 
 figure{margin:44px 0 0}
-figure img{width:100%;border-radius:14px;border:1px solid var(--line);box-shadow:var(--sh);display:block}
+figure img,figure video{width:100%;height:auto;border-radius:14px;border:1px solid var(--line);box-shadow:var(--sh);display:block;background:#1f1e1d}
 figcaption{font-size:.8rem;color:var(--faint);text-align:center;margin-top:10px}
 
 .grid{display:grid;gap:22px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));margin-top:26px}
@@ -113,7 +117,7 @@ footer a{color:var(--dim)}
   <img class="mark" src="assets/icon.png" alt="Ferry icon" width="96" height="96">
   <h1>Ferry</h1>
   <p class="tag">Your Claude Code chats aren't gone. They're attached to an account you're not signed into.</p>
-  <p class="sub">Ferry lists every Claude account on your machine, moves chats between them, and keeps an archive the 30-day cleanup can't touch.</p>
+  <p class="sub">Ferry lists every Claude account on your machine, moves chats between them, finds the CLI, VS Code and Cursor chats no account lists, and keeps an archive the 30-day cleanup can't touch.</p>
 
   <div class="dl">
     <a class="btn p" href="https://github.com/ahkamboh/ferry/releases/latest/download/Ferry-macos-universal.zip">
@@ -126,9 +130,14 @@ footer a{color:var(--dim)}
   <p class="meta">v1.6.2 · macOS 11+ and Windows 10+ · no account, no telemetry, nothing leaves your network</p>
 
   <figure>
-    <img src="assets/screenshot.png" alt="Ferry showing three Claude accounts, a chat list, and a conversation rendered with tables and code blocks">
-    <figcaption>Accounts on the left, their chats in the middle, the conversation on the right. Shown with example data.</figcaption>
+    <video autoplay muted loop playsinline controls preload="metadata" width="1600" height="1084"
+           poster="assets/ferry-demo-poster.png" aria-label="Ferry demo: every feature, on example data">
+      <source src="assets/ferry-demo.mp4" type="video/mp4">
+      <img src="assets/ferry-demo-poster.png" alt="Ferry showing Claude accounts, a chat list, and a conversation rendered with tables and code blocks">
+    </video>
+    <figcaption>Every feature, on example data: a chat moved out of a signed-out account, a CLI chat added to one, Cursor chats converted both ways, a folder fixed, a download, a restore, a backup, and a chat sent to another computer on the same Wi-Fi.</figcaption>
   </figure>
+  <script>if(matchMedia("(prefers-reduced-motion: reduce)").matches){const v=document.querySelector("figure video");v.removeAttribute("autoplay");v.pause()}</script>
 </header>
 
 <main>
@@ -150,13 +159,18 @@ footer a{color:var(--dim)}
   <h2>What Ferry does</h2>
   <table>
     <tr><th>See every account</th><td>Every Claude account signed into this machine, including ones you're signed out of, with all their chats.</td></tr>
-    <tr><th>Tell them apart</th><td>Email for the account you're signed into. Connectors, date range and project folders for the rest. Nickname any account and it sticks.</td></tr>
-    <tr><th>Read any chat</th><td>The full conversation with real Markdown — tables, code blocks, lists, quotes — plus the tool calls Claude made.</td></tr>
-    <tr><th>Copy or move</th><td>Drag a chat onto another account, or use the buttons. Copy keeps the original where it is.</td></tr>
-    <tr><th>Download</th><td>Save a whole conversation as Markdown, plain text or JSON, to any folder you choose.</td></tr>
-    <tr><th>Delete and undelete</th><td>Deletes are reversible. Restore from another account or from the archive.</td></tr>
+    <tr><th>Tell them apart</th><td>A nickname, the Claude display name or the email, remembered even after you sign out. A green dot marks the one you're signed into. Nickname any account and it sticks.</td></tr>
+    <tr><th>CLI and VS Code chats</th><td>Sessions you ran with <code>claude</code> or in VS Code that no account lists. Read them, then <strong>Add to account</strong> and Claude lists them.</td></tr>
+    <tr><th>Cursor</th><td>Cursor conversations converted into Claude chats in the folder they were worked in, and Claude chats converted back with <strong>Convert</strong>.</td></tr>
+    <tr><th>Fix a chat's folder</th><td>A chat started without a folder shows <strong>No folder</strong> in Claude. Point it at the one it belongs to, and Claude names it there.</td></tr>
+    <tr><th>Read any chat</th><td>The conversation with real Markdown — tables, code blocks, lists, quotes — plus the tool calls Claude made. The app shows a chat's first 800 messages; Download saves all of it.</td></tr>
+    <tr><th>Copy or move</th><td>Pick an account in <strong>Send to</strong> and choose Copy or Move, or drag the chat onto it. Copy keeps the original where it is.</td></tr>
+    <tr><th>Rename and search</th><td>Click a chat's title to rename it; filter an account's chats by title.</td></tr>
+    <tr><th>Download</th><td>Save a whole Claude, CLI or VS Code conversation as Markdown, plain text or JSON, to any folder you choose.</td></tr>
+    <tr><th>Delete and undelete</th><td>Delete only removes the chat's record, never the conversation. Restore brings it back from another account or from a backup.</td></tr>
     <tr><th>Back up</th><td>One button archives every chat and every transcript, subagent transcripts included.</td></tr>
-    <tr><th>Send nearby</th><td>Send a chat, from Claude or Cursor, to someone else's Ferry on the same Wi-Fi, Mac or Windows. You both check the same six-digit code before anything moves, and it's off until you turn it on.</td></tr>
+    <tr><th>Send nearby</th><td>Send a chat from an account, Cursor, the CLI or VS Code to someone else's Ferry on the same Wi-Fi, Mac or Windows. You both check the same six-digit code before anything moves, receiving works with Claude open, and it's off until you turn it on.</td></tr>
+    <tr><th>Zoom</th><td>Ctrl/Cmd + and −, or Ctrl/Cmd + scroll; Ctrl/Cmd 0 resets. The level is remembered.</td></tr>
   </table>
 </section>
 
@@ -172,17 +186,22 @@ footer a{color:var(--dim)}
   </table>
   <p style="margin-top:18px">Because transcripts are account-agnostic, moving a chat only moves about <strong>10&nbsp;KB of JSON</strong>. A 45&nbsp;MB conversation transfers in the same instant as a tiny one, and nothing is duplicated on disk.</p>
   <div class="note">
-    <strong>Ferry leaves your conversations alone.</strong> It writes the small metadata record, and snapshots every file before changing it. Only two things write a transcript: converting a Cursor chat into Claude, and receiving a chat over Nearby. Receiving is the one write to Claude's files allowed while the Claude app is open; everything else there waits until you quit it. Converting a chat into Cursor only needs Cursor closed.
+    <strong>Ferry leaves your conversations alone.</strong> It writes the small metadata record, and snapshots every file before changing it. Only two things write a conversation: converting a Cursor chat into Claude, and receiving a chat over Nearby. Fixing a chat's folder gives its existing transcript a second name under the new folder (a hard link, or a copy on a disk that refuses links). Receiving is the one write to Claude's files allowed while the Claude app is open; everything else there waits until you quit it. Converting a chat into Cursor only needs Cursor closed.
   </div>
 </section>
 
 <section class="wrap">
   <h2>There's a CLI too</h2>
   <p>Python 3 standard library only — no <code>pip install</code>, no virtualenv, no build step.</p>
-<pre><code>python3 ferry-cli.py list                    # every account and its chats
-python3 ferry-cli.py vault                   # archive everything
-python3 ferry-cli.py export "auth refactor"  # save a chat to a file
-python3 ferry-cli.py ui                      # the same interface in a browser</code></pre>
+<pre><code>python3 ferry-cli.py list                        # every account and its chats
+python3 ferry-cli.py vault                       # archive everything
+python3 ferry-cli.py export "auth refactor"      # save a chat to a file
+python3 ferry-cli.py import 17b163e1 work@       # add a CLI chat to an account
+python3 ferry-cli.py folder "auth refactor" ~/code/api   # set a chat's folder
+python3 ferry-cli.py cursor-import 4191e56f work@        # Cursor -> Claude
+python3 ferry-cli.py cursor-export "the title"           # Claude -> Cursor
+python3 ferry-cli.py ui                          # the same interface in a browser (all but Nearby)
+python3 ferry-cli.py ui --demo                   # try it on example data</code></pre>
   <p style="margin-top:16px">Run <code>vault</code> from cron or a scheduled task and your history is backed up nightly without opening anything.</p>
 </section>
 
@@ -200,6 +219,12 @@ python3 ferry-cli.py ui                      # the same interface in a browser</
 
   <div class="q"><h3>Does it send anything anywhere?</h3>
   <p>Not over the internet. Ferry reads and writes local files. Its one network feature, Nearby, only talks to other Ferry apps on private and link-local addresses on your network, is off until you turn it on, and sends a chat only after both people confirm the same code. The transfer is encrypted.</p></div>
+
+  <div class="q"><h3>The Claude app doesn't list the chats I ran in the terminal or in VS Code. Where are they?</h3>
+  <p>On disk, in <code>~/.claude/projects</code>, like every other chat. They just have no per-account record, and that record is all the app lists from. Ferry shows them under <strong>not in an account</strong>; <strong>Add to account</strong> writes the record, and Claude lists the chat from then on. The transcript isn't touched, so <code>claude --resume</code> still finds it.</p></div>
+
+  <div class="q"><h3>The other computer doesn't show up in Nearby.</h3>
+  <p>Turn Nearby on at both ends. The first time, allow Ferry on the local network (macOS) or through the firewall (Windows), and make sure Windows has the Wi-Fi set to Private. Some office and café networks block discovery: then type the address the other person's Nearby menu shows into the box at the bottom of <strong>Send to</strong>.</p></div>
 
   <div class="q"><h3>Why does my Mac or PC warn me when I open it?</h3>
   <p>Neither build is code-signed. On macOS 15 and later, open Ferry once, then click <strong>Open Anyway</strong> in System Settings → Privacy &amp; Security (on macOS 14 and earlier, right-click the app → <strong>Open</strong>). On Windows, SmartScreen → <strong>More info</strong> → <strong>Run anyway</strong>. Once each. If Windows says <strong>Smart App Control blocked an app</strong>, there is no Run anyway: use the CLI's <code>ui</code> command, which serves the same interface, or turn Smart App Control off in Windows Security.</p></div>

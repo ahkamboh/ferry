@@ -310,6 +310,23 @@ def known_profiles(found):
         json.dump(known, open(PROFILES, "w", encoding="utf-8"), indent=1)
     return known
 
+def archived_copy(sid):
+    """The newest copy of a chat's record that Ferry kept: a backup
+    (chats/<stamp>/<account>/<id>.json) or the snapshot Delete takes
+    (snapshots/<stamp>-delete-<id>.json), whichever is later. Without the second,
+    a chat deleted in Ferry before any backup could never be restored."""
+    v, i = glob.escape(VAULT), glob.escape(sid)
+    found = [(os.path.basename(os.path.dirname(os.path.dirname(p))), p)
+             for p in glob.glob(f"{v}/chats/*/*/{i}.json")]
+    found += [(os.path.basename(p)[:15], p) for p in glob.glob(f"{v}/snapshots/*-delete-{i}.json")]
+    return max(found)[1] if found else None
+
+def archived_title(sid):
+    """The title of a chat's newest kept copy."""
+    p = archived_copy(sid)
+    try: return (json.load(open(p, encoding="utf-8")).get("title") or None) if p else None
+    except Exception: return None
+
 def read_rec(path):
     # a session no account owns has no record on disk: describe it from its
     # own transcript, so everything that reads a chat can read one of those too
@@ -569,6 +586,13 @@ def scan():
         try: when = int(open(f).read().strip())
         except Exception: when = None
         s["deleted"].append({"id": sid, "when": when, "path": f})
+    # A deleted chat is named by its title where one survives: in the account a
+    # move took it to, else in the newest archived copy, which Restore would use
+    titles = {c["id"]: c["title"] for sc in scopes.values() for c in sc["chats"]}
+    for sc in scopes.values():
+        for d in sc["deleted"]:
+            t = titles.get(d["id"]) or archived_title(d["id"])
+            if t: d["title"] = t
     for s in scopes.values():
         s["chats"].sort(key=lambda c: c["last"] or 0, reverse=True)
         s["deleted"].sort(key=lambda d: d["when"] or 0, reverse=True)
@@ -737,12 +761,9 @@ def op_undelete(acct, org, sid):
     short = sid[len("local_"):]
     dst_dir = scope_dir(acct, org)
     src = None
-    for cand in glob.glob(f"{SESS}/*/*/{sid}.json"):
+    for cand in glob.glob(f"{glob.escape(SESS)}/*/*/{glob.escape(sid)}.json"):
         src = cand; break
-    if not src:
-        # vault layout is chats/<stamp>/<account>/<file>, so two wildcards
-        v = sorted(glob.glob(f"{VAULT}/chats/*/*/{sid}.json"))
-        if v: src = v[-1]
+    if not src: src = archived_copy(sid)
     if not src: raise RuntimeError("no surviving copy found in any account or the vault")
     rec = read_rec(src)
     for k in ACCOUNT_SCOPED: rec.pop(k, None)
@@ -809,6 +830,7 @@ def transcript_head(path, n=40):
 # that turns window.__TAURI__.core.invoke(cmd, args) into POST /api/invoke.
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+DEMO = False          # set by demo_setup(); turns on the stand-in Nearby
 
 SHIM = """<script>
 window.__TAURI__={core:{invoke:async(cmd,args)=>{
@@ -830,8 +852,9 @@ def page():
         return b"<h1>dist/index.html not found</h1><p>Run this from the ferry checkout.</p>"
     html = open(f, encoding="utf-8").read()
     anchor = "<script>\nconst iv="
+    shim = SHIM.replace("<script>\n", "<script>\nwindow.__FERRY_DEMO__=true;\n", 1) if DEMO else SHIM
     if anchor in html:
-        html = html.replace(anchor, SHIM + anchor, 1)
+        html = html.replace(anchor, shim + anchor, 1)
     return html.encode()
 
 def chat_full(path):
@@ -884,6 +907,12 @@ class H(BaseHTTPRequestHandler):
         self._send({"__error": "not found"}, 404)
 
     def do_POST(self):
+        if DEMO and self.path == "/api/demo/nearby":
+            n = int(self.headers.get("Content-Length") or 0)
+            try: req = json.loads(self.rfile.read(n) or b"{}")
+            except Exception: return self._send({"__error": "bad json"}, 400)
+            r = nb_demo_control(req)
+            return self._send(r, 400 if "__error" in r else 200)
         if self.path != "/api/invoke":
             return self._send({"__error": "not found"}, 404)
         n = int(self.headers.get("Content-Length") or 0)
@@ -1090,19 +1119,185 @@ def _demo_ms(days_ago, hour=14):
 def _demo_iso(ms, plus=0):
     return datetime.fromtimestamp(ms / 1000 + plus).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-def _demo_transcript(title, model, turns, ms):
+# What each demo chat is about, so the chat on screen matches its title.
+# (prompt, answer, [(tool, input)]) per exchange. "Stripe webhook retries" is
+# the one the video reads through, so it carries every kind of Markdown the
+# reader renders: headings, a table, a list, a quote and a code block.
+DEMO_TALK = {
+    "Stripe webhook retries": [
+        ("stripe is retrying webhooks and we're double-charging on invoice.paid. how do we make the handler idempotent?",
+         "Stripe delivers each event **at least once**, so the same event can arrive several times: a retry "
+         "after a timeout, or a replay from the dashboard. Record each event id before acting on it.\n\n"
+         "## What goes wrong today\n\n"
+         "| Step | The handler now | Problem |\n|---|---|---|\n"
+         "| Receive `invoice.paid` | charges the saved card | runs again on every retry |\n"
+         "| Respond | after the charge finishes | a slow charge times out, so Stripe retries |\n"
+         "| Store | nothing about the event | a retry looks like a new event |\n\n"
+         "### The fix\n\n"
+         "1. Verify the signature, then insert the event id into `processed_events`\n"
+         "2. If the insert hits the unique key, return `200` and stop\n"
+         "3. Do the work, and answer inside Stripe's 10 s window\n\n"
+         "> Stripe keeps retrying a failed delivery for up to three days, so a handler that is only "
+         "*mostly* idempotent will eventually charge someone twice.\n\n"
+         "```ts\nexport async function handle(evt: Stripe.Event) {\n"
+         "  const fresh = await db.processedEvents.insertIgnore({ id: evt.id })\n"
+         "  if (!fresh) return { status: 200 }      // a retry: already handled\n"
+         "  if (evt.type === \"invoice.paid\") await fulfil(evt.data.object)\n"
+         "  return { status: 200 }\n}\n```\n\n"
+         "The unique key does the locking, so two deliveries arriving at once can't both get through.",
+         [("Read", {"file_path": "webhooks/stripe.ts"}), ("Grep", {"pattern": "invoice.paid"}),
+          ("Bash", {"command": "stripe events list --limit 5"})]),
+        ("does the insert need its own transaction?",
+         "Put it in the same transaction as `fulfil()`. If fulfilment fails, the insert rolls back with it "
+         "and Stripe's retry gets a clean second attempt, instead of a `200` for work that never happened.", []),
+        ("add a test that replays the same event twice",
+         "Added `webhooks.test.ts`: it posts one signed `invoice.paid` payload twice and asserts one charge "
+         "and two `200`s. `pnpm test webhooks` passes.",
+         [("Edit", {"file_path": "webhooks/webhooks.test.ts"}), ("Bash", {"command": "pnpm test webhooks"})]),
+        ("anything to change on the Stripe side?",
+         "Only the endpoint's event list. Keep `invoice.paid` and `invoice.payment_failed`, and drop "
+         "`charge.succeeded`: it fires for the same payment, and it was the second trigger for the double charge.", []),
+    ],
+    "Postgres index tuning": [
+        ("the transactions page takes 4 seconds to load for big accounts",
+         "The query filters on `account_id` and sorts by `posted_at`, but the only index is on `account_id`, "
+         "so Postgres reads every row for the account and sorts them on disk.\n\n"
+         "```sql\nEXPLAIN ANALYZE\nSELECT * FROM transactions\nWHERE account_id = $1\n"
+         "ORDER BY posted_at DESC\nLIMIT 50;\n-- Sort Method: external merge  Disk: 18432kB\n"
+         "-- Execution Time: 3912.4 ms\n```\n\n"
+         "A composite index lets it read the newest 50 rows straight off the index.",
+         [("Read", {"file_path": "queries/transactions.sql"}),
+          ("Bash", {"command": "psql -c 'EXPLAIN ANALYZE SELECT ...'"})]),
+        ("which column goes first?",
+         "`(account_id, posted_at DESC)`. Equality columns first, the sort column last, so one range scan "
+         "returns the rows already in order.", []),
+        ("created it concurrently. 38 ms now",
+         "Good. The old single-column index is redundant: the composite one serves every query that used it. "
+         "Dropping it frees about 1.2 GB and makes every insert a little cheaper.",
+         [("Bash", {"command": "psql -c '\\di+ transactions*'"})]),
+    ],
+    "Refactor auth middleware": [
+        ("split the auth middleware. it parses the token, loads the session and checks roles in one 300-line function",
+         "Three middlewares, run in order, each doing one thing:\n\n"
+         "1. `parseToken` reads the bearer token and verifies the JWT signature\n"
+         "2. `loadSession` fetches the session and rejects revoked ones\n"
+         "3. `requireRole(role)` checks the route's role\n\n"
+         "Routes that only need a signed-in user skip the third.",
+         [("Read", {"file_path": "middleware/auth.go"}), ("Edit", {"file_path": "middleware/auth.go"})]),
+        ("how do we rotate the JWT signing key without signing everyone out?",
+         "Keep two keys. Sign with the new one, verify against both by `kid`, and drop the old one once the "
+         "longest token lifetime has passed.\n\n"
+         "```go\nkey, ok := keys[token.Header[\"kid\"].(string)]\nif !ok {\n\treturn nil, ErrUnknownKey\n}\n```", []),
+        ("tests?",
+         "`go test ./middleware/...` passes: 22 tests, including a token signed with the retired key after "
+         "the grace period, which is now rejected.",
+         [("Bash", {"command": "go test ./middleware/..."})]),
+    ],
+    "Rust CLI argument parsing": [
+        ("argus has a hand-rolled argument parser. move it to clap",
+         "Moved to clap's derive API. Each subcommand is an enum variant now, so `--help` and the error "
+         "messages come for free.\n\n"
+         "```rust\n#[derive(Parser)]\n#[command(name = \"argus\", version)]\nstruct Cli {\n"
+         "    #[command(subcommand)]\n    cmd: Cmd,\n}\n```",
+         [("Read", {"file_path": "src/main.rs"}), ("Edit", {"file_path": "src/cli.rs"}),
+          ("Bash", {"command": "cargo build"})]),
+        ("keep the old -v / -vv verbosity",
+         "Done with `#[arg(short, action = ArgAction::Count)] verbose: u8`: `-v` is info, `-vv` debug and "
+         "`-vvv` trace, as before.", []),
+        ("what did it do to the binary size?",
+         "2.1 MB to 2.4 MB in release, mostly clap's help rendering. With `default-features = false` and only "
+         "`std`, `help` and `derive` it is back to 2.2 MB.",
+         [("Bash", {"command": "cargo bloat --release --crates | head"})]),
+    ],
+    "Migrate build to esbuild": [
+        ("the webpack build takes 90 s. try esbuild",
+         "esbuild bundles the app in 1.4 s. Two things needed care:\n\n"
+         "- SVG imports: `@svgr/webpack` is replaced by a small esbuild plugin\n"
+         "- `process.env`: esbuild needs every variable listed in `define`",
+         [("Read", {"file_path": "webpack.config.js"}), ("Edit", {"file_path": "build.mjs"}),
+          ("Bash", {"command": "node build.mjs"})]),
+        ("source maps?",
+         "`sourcemap: \"linked\"` in production and `\"inline\"` in development. Sentry's upload step picks "
+         "up the linked ones unchanged.", []),
+    ],
+    "Flaky integration tests": [
+        ("TestRefundFlow fails about 1 run in 10 on CI",
+         "It asserts on the order of two webhook events, but the test server delivers them on separate "
+         "goroutines. Locally they almost always arrive in order; on CI's slower runners, not always.",
+         [("Grep", {"pattern": "TestRefundFlow"}), ("Bash", {"command": "go test -run TestRefundFlow -count=200"})]),
+        ("fix it",
+         "The test now collects both events and compares them as a set. 500 runs, 0 failures.",
+         [("Edit", {"file_path": "refunds/refund_test.go"})]),
+    ],
+    "Terraform state migration": [
+        ("move our terraform state from local files to S3, with locking",
+         "Add an `s3` backend with a DynamoDB lock table; `terraform init -migrate-state` then copies the "
+         "local state up.\n\n"
+         "```hcl\nterraform {\n  backend \"s3\" {\n    bucket         = \"acme-tf-state\"\n"
+         "    key            = \"prod/terraform.tfstate\"\n    region         = \"eu-west-1\"\n"
+         "    dynamodb_table = \"tf-locks\"\n    encrypt        = true\n  }\n}\n```",
+         [("Read", {"file_path": "main.tf"}), ("Edit", {"file_path": "backend.tf"}),
+          ("Bash", {"command": "terraform init -migrate-state"})]),
+        ("and the old local state?",
+         "Keep `terraform.tfstate.backup` until a `plan` against the remote state shows no changes, then "
+         "delete both local files so nobody applies from them by mistake.", []),
+    ],
+    "Rewrite the billing cron": [
+        ("the billing cron double-bills when one run overlaps the next",
+         "Each run now takes a Postgres advisory lock first and exits if it can't get one, so a slow run "
+         "and the next scheduled run can never overlap.\n\n"
+         "```sql\nSELECT pg_try_advisory_lock(hashtext('billing-cron'));\n```",
+         [("Read", {"file_path": "jobs/billing.py"}), ("Edit", {"file_path": "jobs/billing.py"})]),
+        ("what if a run crashes while holding the lock?",
+         "Advisory locks belong to the database session, so the lock goes when the crashed process's "
+         "connection closes. No cleanup job needed.", []),
+    ],
+    "Offline sync for the field app": [
+        ("field techs lose notes when they go offline. how should the app sync?",
+         "Write every note locally first, then sync a queue of changes when the connection comes back:\n\n"
+         "1. each edit is stored with a client-made id and a timestamp\n"
+         "2. a background task sends the queue, oldest first\n"
+         "3. the server keeps the newest version of each note\n\n"
+         "Nothing is lost offline, and a note edited on two devices keeps the later edit.",
+         [("Read", {"file_path": "app/notes/store.ts"}), ("Edit", {"file_path": "app/sync/queue.ts"})]),
+        ("what about two techs editing the same checklist?",
+         "Last write wins is fine for a note one tech owns. For shared checklists, merge per item instead of "
+         "per note, so two techs ticking different items don't overwrite each other.", []),
+    ],
+    "Profile the slow CSV import": [
+        ("importing a 200 MB CSV takes 11 minutes",
+         "cProfile puts 80% of the time in one `INSERT` per row. `COPY FROM STDIN` in batches of 10,000 "
+         "rows brings it down to 48 seconds.",
+         [("Bash", {"command": "python -m cProfile -s cumtime import.py sample.csv | head -20"}),
+          ("Edit", {"file_path": "import.py"})]),
+        ("and memory?",
+         "The file is streamed through `csv.reader`, so memory stays flat at about 60 MB whatever its size.", []),
+    ],
+}
+
+def _demo_transcript(title, model, turns, ms, cwd="", entry="claude-desktop"):
     """A believable conversation: enough turns to scroll, one richly formatted
     answer so the Markdown renderer has tables, code, lists and a quote to show."""
     lines = []
+    # stamped like the desktop app's own transcripts, so a chat whose record is
+    # deleted lists under "Desktop, no record", as a real one would
+    where = {"cwd": cwd, "entrypoint": entry} if cwd else {}
     def user(text, at):
-        lines.append(json.dumps({"type": "user", "timestamp": _demo_iso(ms, at),
-                                 "message": {"content": text}}))
+        lines.append(json.dumps({"type": "user", "timestamp": _demo_iso(ms, at), **where,
+                                 "message": {"role": "user", "content": text}}))
     def claude(text, at, tools=()):
         content = [{"type": "text", "text": text}]
         for name, inp in tools:
             content.append({"type": "tool_use", "name": name, "input": inp})
-        lines.append(json.dumps({"type": "assistant", "timestamp": _demo_iso(ms, at),
-                                 "message": {"content": content}}))
+        lines.append(json.dumps({"type": "assistant", "timestamp": _demo_iso(ms, at), **where,
+                                 "message": {"role": "assistant", "model": "claude-" + model,
+                                             "content": content}}))
+
+    if title in DEMO_TALK:
+        at = 0
+        for prompt, answer, tools in DEMO_TALK[title]:
+            user(prompt, at); claude(answer, at + 60, tools); at += 900
+        return "\n".join(lines) + "\n"
 
     user("how does ferry move a chat between accounts without copying the whole transcript?", 0)
     claude(_MD, 60, [("Read", {"file_path": "src-tauri/src/main.rs"}),
@@ -1124,15 +1319,311 @@ def _demo_transcript(title, model, turns, ms):
                f"disk changes.", 2460 + i * 700)
     return "\n".join(lines) + "\n"
 
+# Chats no account lists. The CLI and the VS Code extension write a transcript
+# for every session but never the per-account record, so these land under "not
+# in an account" and can be added to one. Every line carries the surface that
+# wrote it (entrypoint), the folder it ran in (cwd) and its session: read_session
+# keeps the first non-empty of each, and SOURCES turns the entrypoint into the
+# sidebar row ("cli" -> Claude Code CLI, "claude-vscode" -> VS Code).
+# (session id, entrypoint, cwd, model, git branch, days ago, [(prompt, answer, tools)])
+DEMO_SOURCES = [
+    ("5f0e2c1a-8d34-4b6e-a917-3c52d8e0f4a1", "cli", "/Users/dev/code/argus",
+     "claude-opus-5", "main", 0, [
+        ("Add zsh and fish completions to argus",
+         "Done. `argus completions <shell>` now prints a completion script, generated from the "
+         "same clap definition the parser uses, so the two can't drift apart.\n\n"
+         "| Shell | Installs to |\n|---|---|\n| zsh | `~/.zfunc/_argus` |\n"
+         "| fish | `~/.config/fish/completions/argus.fish` |\n| bash | `~/.local/share/bash-completion/argus` |",
+         [("Read", {"file_path": "src/cli.rs"}), ("Edit", {"file_path": "src/cli.rs"}),
+          ("Bash", {"command": "cargo run -- completions zsh | head -20"})]),
+        ("can it install them too, instead of printing?",
+         "Yes. `argus completions --install` reads the shell from `$SHELL` and writes the file to the "
+         "path in the table, creating the folder if it is missing.\n\n- it never overwrites a file it "
+         "didn't write\n- `--dry-run` prints the path instead",
+         [("Edit", {"file_path": "src/completions.rs"}), ("Bash", {"command": "cargo test completions"})]),
+        ("ship it",
+         "Committed on `main` as `feat: shell completions`. All 14 tests pass.",
+         [("Bash", {"command": "git commit -am 'feat: shell completions'"})]),
+    ]),
+    ("a3c9e7b2-41d8-4f06-8e5a-9b2d17c6e053", "cli", "/Users/dev/code/ledger",
+     "claude-sonnet-5", "perf/reconcile", 4, [
+        ("Why is the nightly reconcile job slow?",
+         "It runs one query per account. With 18,000 accounts that is 18,000 round trips, and each one "
+         "sorts `entries` by `posted_at` without an index.\n\n```sql\nSELECT * FROM entries\n"
+         "WHERE account_id = $1 AND posted_at >= $2\nORDER BY posted_at;\n```",
+         [("Grep", {"pattern": "reconcile"}), ("Read", {"file_path": "jobs/reconcile.py"})]),
+        ("fix it without changing the output",
+         "Batched into one query over all accounts, plus a composite index on "
+         "`(account_id, posted_at)`. Output is byte-identical on last night's data; runtime went "
+         "from **41 min** to **2 min 10 s**.",
+         [("Edit", {"file_path": "jobs/reconcile.py"}),
+          ("Bash", {"command": "python -m jobs.reconcile --date 2026-09-03 --diff"})]),
+    ]),
+    ("c81f4d2e-6a07-4b93-b5c1-2e8f90a4d716", "claude-vscode", "/Users/dev/code/acme-web",
+     "claude-opus-5", "fix/pricing-hydration", 1, [
+        ("Fix the hydration warning on the pricing page",
+         "The server renders prices in `en-US` and the browser re-renders them in the visitor's locale, "
+         "so the text differs and React warns. Formatting now happens once, on the server, with the "
+         "locale passed down as a prop.",
+         [("Read", {"file_path": "app/pricing/page.tsx"}), ("Edit", {"file_path": "app/pricing/Price.tsx"})]),
+        ("does the annual toggle still work?",
+         "Yes. The toggle only switches which of the two server-formatted strings is shown, so it "
+         "never formats on the client. Checked in Chrome and Safari with the locale set to `de-DE`.",
+         [("Bash", {"command": "npm run test -- pricing"})]),
+    ]),
+]
+
+def _demo_session(sid, entry, cwd, model, branch, turns, ms):
+    """A transcript as the CLI or the VS Code extension writes one: user and
+    assistant lines chained by uuid, each stamped with the surface, the folder
+    and the session. No record is written anywhere, so no account claims it."""
+    lines, parent, at = [], None, 0
+    def put(kind, message):
+        nonlocal parent
+        me = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{sid}/{len(lines)}"))
+        lines.append(json.dumps({"parentUuid": parent, "isSidechain": False,
+                                 "userType": "external", "cwd": cwd, "sessionId": sid,
+                                 "version": "2.3.4", "gitBranch": branch, "entrypoint": entry,
+                                 "type": kind, "message": message, "uuid": me,
+                                 "timestamp": _demo_iso(ms, at)}))
+        parent = me
+    for prompt, answer, tools in turns:
+        put("user", {"role": "user", "content": prompt})
+        at += 40
+        content = [{"type": "text", "text": answer}] + [
+            {"type": "tool_use", "id": f"toolu_{len(lines):02d}{k}", "name": n, "input": i}
+            for k, (n, i) in enumerate(tools)]
+        put("assistant", {"role": "assistant", "model": model, "content": content})
+        at += 420
+    return "\n".join(lines) + "\n"
+
+# Three invented Cursor conversations. Each step is ("user", text), ("ai", text)
+# or ("tool", name, args): a tool step is a bubble with no prose, only
+# toolFormerData, which is what most of a real Cursor chat is made of.
+DEMO_CURSOR_CHATS = [
+    ("3b8f6c1e-2a7d-4d5e-9f10-6c4a2e8b7d91", "Debounce the search box",
+     "/Users/dev/code/acme-web", 2, [
+        ("user", "the search box on /products fires a request on every keystroke. "
+                 "can we debounce it without pulling in lodash?"),
+        ("tool", "read_file", {"target_file": "src/components/SearchBox.tsx"}),
+        ("tool", "grep_search", {"query": "useProductSearch"}),
+        ("ai", "Yes. A small hook does it: it holds the latest value and only publishes "
+               "it once the input has been quiet for `delay` ms.\n\n"
+               "```tsx\n"
+               "import { useEffect, useState } from \"react\";\n\n"
+               "export function useDebounced<T>(value: T, delay = 250): T {\n"
+               "  const [settled, setSettled] = useState(value);\n"
+               "  useEffect(() => {\n"
+               "    const id = setTimeout(() => setSettled(value), delay);\n"
+               "    return () => clearTimeout(id);\n"
+               "  }, [value, delay]);\n"
+               "  return settled;\n"
+               "}\n"
+               "```\n\n"
+               "Then in `SearchBox.tsx` pass `useDebounced(query)` to `useProductSearch` "
+               "instead of `query`. The input stays instant; only the fetch waits."),
+        ("user", "nice. but typing fast and then clearing the box still flashes stale "
+                 "results for a moment"),
+        ("tool", "read_file", {"target_file": "src/hooks/useProductSearch.ts"}),
+        ("tool", "edit_file", {"target_file": "src/hooks/useProductSearch.ts",
+                               "instructions": "abort stale requests"}),
+        ("ai", "That's a race, not the debounce: an older request can resolve after a "
+               "newer one. Abort the previous request whenever the query changes:\n\n"
+               "```ts\n"
+               "useEffect(() => {\n"
+               "  if (!q) { setResults([]); return; }\n"
+               "  const ctrl = new AbortController();\n"
+               "  fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal: ctrl.signal })\n"
+               "    .then((r) => r.json())\n"
+               "    .then(setResults)\n"
+               "    .catch((e) => { if (e.name !== \"AbortError\") throw e; });\n"
+               "  return () => ctrl.abort();\n"
+               "}, [q]);\n"
+               "```\n\n"
+               "An empty query now clears at once instead of waiting on a response that "
+               "no longer matters."),
+        ("user", "what delay would you pick?"),
+        ("ai", "250 ms for a product search: short enough to feel live, long enough to "
+               "skip most of the intermediate keystrokes. Only go to 400 ms if the "
+               "endpoint is expensive."),
+        ("user", "ship it. can you add a test?"),
+        ("tool", "edit_file", {"target_file": "src/hooks/useDebounced.test.ts"}),
+        ("tool", "run_terminal_cmd", {"command": "pnpm vitest run src/hooks"}),
+        ("ai", "Added `useDebounced.test.ts` with fake timers: the value must not change "
+               "before 250 ms and must change after. `pnpm vitest run src/hooks` passes, "
+               "4 tests."),
+    ]),
+    ("9e2d47a0-6c15-4f3b-8a92-d1b5e07c3f64", "Shrink the worker Docker image",
+     "/Users/dev/code/pulse-worker", 5, [
+        ("user", "our worker image is 1.9 GB. it's a python app with like 6 "
+                 "dependencies. why?"),
+        ("tool", "read_file", {"target_file": "Dockerfile"}),
+        ("tool", "run_terminal_cmd",
+         {"command": "docker history pulse-worker:latest --format '{{.Size}} {{.CreatedBy}}'"}),
+        ("ai", "Three things add up:\n\n"
+               "1. `FROM python:3.12` is the full Debian image, about 1 GB before any of "
+               "your code.\n"
+               "2. `build-essential` is installed to compile `psycopg` and never removed.\n"
+               "3. `COPY . .` sends `.git` and the docs site's `node_modules` into the image.\n\n"
+               "A multi-stage build fixes all three:\n\n"
+               "```dockerfile\n"
+               "FROM python:3.12-slim AS build\n"
+               "RUN apt-get update && apt-get install -y --no-install-recommends build-essential libpq-dev\n"
+               "COPY requirements.txt .\n"
+               "RUN pip wheel --no-cache-dir -r requirements.txt -w /wheels\n\n"
+               "FROM python:3.12-slim\n"
+               "RUN apt-get update && apt-get install -y --no-install-recommends libpq5 \\\n"
+               "    && rm -rf /var/lib/apt/lists/*\n"
+               "COPY --from=build /wheels /wheels\n"
+               "RUN pip install --no-cache-dir /wheels/* && rm -rf /wheels\n"
+               "COPY worker/ /app/worker/\n"
+               "WORKDIR /app\n"
+               "CMD [\"python\", \"-m\", \"worker\"]\n"
+               "```"),
+        ("user", "and the .git thing?"),
+        ("tool", "edit_file", {"target_file": ".dockerignore"}),
+        ("ai", "Added a `.dockerignore` with `.git`, `docs/node_modules`, `__pycache__` and "
+               "`.venv`. With `COPY worker/` it is belt and braces, but it also makes the "
+               "build context upload in a second instead of twenty."),
+        ("user", "rebuilt: 212 MB. anything else worth doing?"),
+        ("ai", "Two small ones: run as a non-root user (`useradd -r worker`, then "
+               "`USER worker`), and pin the base image by digest so a rebuild next month "
+               "does not quietly change Python under you. Past that it is distroless, "
+               "which saves maybe 60 MB more and costs you a shell to debug with."),
+    ]),
+    ("c41a8f25-7b3e-4d06-b9e7-58f2a1d6c0b3", "Add health checks for the k8s probes",
+     "/Users/dev/code/acme-api", 15, [
+        ("user", "k8s keeps restarting the api pod during deploys. add a health endpoint "
+                 "the probes can hit"),
+        ("tool", "codebase_search", {"query": "where the http mux and middleware are set up"}),
+        ("tool", "read_file", {"target_file": "cmd/api/main.go"}),
+        ("tool", "edit_file", {"target_file": "cmd/api/main.go",
+                               "instructions": "add /healthz and /readyz"}),
+        ("ai", "Two endpoints, because Kubernetes is asking two different questions:\n\n"
+               "- `/healthz` (liveness): is the process alive? Never touch the database "
+               "here, or one slow query restarts every pod at once.\n"
+               "- `/readyz` (readiness): can it take traffic right now? This one pings "
+               "Postgres.\n\n"
+               "```go\n"
+               "mux.HandleFunc(\"/healthz\", func(w http.ResponseWriter, _ *http.Request) {\n"
+               "\tw.WriteHeader(http.StatusOK)\n"
+               "})\n"
+               "mux.HandleFunc(\"/readyz\", func(w http.ResponseWriter, r *http.Request) {\n"
+               "\tctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)\n"
+               "\tdefer cancel()\n"
+               "\tif err := db.PingContext(ctx); err != nil {\n"
+               "\t\thttp.Error(w, \"db unavailable\", http.StatusServiceUnavailable)\n"
+               "\t\treturn\n"
+               "\t}\n"
+               "\tw.WriteHeader(http.StatusOK)\n"
+               "})\n"
+               "```"),
+        ("user", "and the probe config?"),
+        ("tool", "edit_file", {"target_file": "deploy/api.yaml"}),
+        ("ai", "In `deploy/api.yaml`: liveness on `/healthz` every 10 s with "
+               "`failureThreshold: 3`, readiness on `/readyz` every 5 s, and a "
+               "`startupProbe` on `/healthz` that allows 30 s for migrations. The restarts "
+               "you saw were the old liveness probe hitting `/` before the router was up."),
+        ("user", "should the auth middleware skip these?"),
+        ("ai", "Yes. Register them on the mux outside the auth middleware, not behind it. "
+               "Otherwise every probe needs a token, and one key rotation takes the whole "
+               "deployment down."),
+        ("user", "done, the deploy went through clean"),
+        ("ai", "Good. Worth an alert on readiness flapping too, so a struggling database "
+               "shows up on your dashboard before it shows up for users."),
+    ]),
+]
+
+def _demo_cursor(root):
+    """A synthetic Cursor install under the demo root, laid out the way every
+    reader above expects: User/globalStorage/state.vscdb with composerHeaders,
+    cursorDiskKV (composerData:<id>, bubbleId:<id>:<bubble>) and ItemTable
+    (the sign-in), and one workspaceStorage/<hash>/workspace.json per folder.
+    Workspaces cover the Claude demo chats' folders too, so a Claude chat
+    converted into Cursor lands in a workspace and not in "no chat list".
+    Returns the User folder, which is what CURSOR names."""
+    import sqlite3, hashlib, urllib.parse
+    user = os.path.join(root, "Cursor", "User")
+    os.makedirs(os.path.join(user, "globalStorage"), exist_ok=True)
+
+    wids = {}
+    folders = [f for _c, _t, f, _d, _s in DEMO_CURSOR_CHATS] + [c[2] for c in DEMO_CHATS]
+    for folder in folders:
+        if folder in wids: continue
+        wid = hashlib.md5(folder.encode("utf-8")).hexdigest()
+        d = os.path.join(user, "workspaceStorage", wid)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "workspace.json"), "w", encoding="utf-8") as fh:
+            json.dump({"folder": "file://" + urllib.parse.quote(folder)}, fh)
+        wids[folder] = wid
+
+    c = sqlite3.connect(os.path.join(user, "globalStorage", "state.vscdb"))
+    c.execute("""create table if not exists composerHeaders (
+        composerId text primary key, workspaceId text, createdAt integer,
+        lastUpdatedAt integer, isArchived integer, isSubagent integer,
+        recency integer, checkpointAt integer, value text, subagentTypeName text)""")
+    c.execute("create table if not exists cursorDiskKV (key text unique on conflict replace, value blob)")
+    c.execute("create table if not exists ItemTable (key text unique on conflict replace, value blob)")
+    # the Cursor sign-in, so the row is named and marked "signed in" like an account
+    c.execute("insert into ItemTable values (?,?)", ("cursorAuth/cachedEmail", "dev@example.com"))
+    c.execute("insert into ItemTable values (?,?)", ("cursorAuth/cachedScopedProfile",
+              json.dumps({"displayName": "", "email": "dev@example.com"})))
+
+    for cid, title, folder, days, steps in DEMO_CURSOR_CHATS:
+        start = _demo_ms(days, hour=10)
+        heads, at = [], 0
+        for i, step in enumerate(steps):
+            at += 40 if step[0] == "tool" else 150      # seconds since the first bubble
+            bid = str(uuid.uuid5(uuid.NAMESPACE_URL, "ferry-demo-bubble:%s:%d" % (cid, i)))
+            when = _demo_iso(start, at)                # local, like the Claude demo chats
+            if step[0] == "tool":
+                b = _bubble_skel(bid, 2, "", when)
+                b["toolFormerData"] = {"tool": 0, "name": step[1], "status": "completed",
+                                       "toolCallId": "toolu_%s" % bid.replace("-", "")[:24],
+                                       "rawArgs": json.dumps(step[2])}
+                has = False
+            else:
+                b = _bubble_skel(bid, 1 if step[0] == "user" else 2, step[1], when)
+                has = True
+            c.execute("insert into cursorDiskKV values (?,?)",
+                      ("bubbleId:%s:%s" % (cid, bid), json.dumps(b, ensure_ascii=False)))
+            heads.append({"bubbleId": bid, "type": b["type"], "createdAt": when,
+                          "grouping": {"isRenderable": True, "hasText": has,
+                                       "isShortPlainText": has and len(b["text"]) < 200,
+                                       "toolDisplayComputed": True}})
+        last = start + at * 1000
+        first = next(s[1] for s in steps if s[0] == "user")
+        data = {"_v": 17, "composerId": cid, "name": title, "status": "completed",
+                "createdAt": start, "lastUpdatedAt": last, "unifiedMode": 2,
+                "hasLoaded": True, "fullConversationHeadersOnly": heads,
+                "text": "", "richText": _cursor_richtext("")}
+        head = {"type": "head", "composerId": cid, "name": title, "subtitle": first[:80],
+                "createdAt": start, "lastUpdatedAt": last, "unifiedMode": 2,
+                "forceMode": "edit", "hasUnreadMessages": False, "isDraft": False,
+                "isArchived": False, "workspaceIdentifier": {"id": wids[folder]}}
+        c.execute("insert into cursorDiskKV values (?,?)",
+                  ("composerData:" + cid, json.dumps(data, ensure_ascii=False)))
+        c.execute("""insert into composerHeaders (composerId, workspaceId, createdAt,
+                     lastUpdatedAt, isArchived, isSubagent, recency, checkpointAt, value,
+                     subagentTypeName) values (?,?,?,?,0,0,?,?,?,'')""",
+                  (cid, wids[folder], start, last, last, last, json.dumps(head, ensure_ascii=False)))
+    c.commit()
+    c.close()
+    return user
+
+# The desktop app's own "is it open" check, switchable from the recording
+# script so the demo can show Ferry refusing to write while Claude is open.
+_DEMO_OPEN = {"claude": False}
+
 def demo_setup():
     """Build the synthetic tree and point every root at it."""
-    global CLAUDE, SESS, PROJ, CFG, IDB, VAULT, LABELS, PREFS, CURSOR, INDEX
+    global CLAUDE, SESS, PROJ, CFG, IDB, VAULT, LABELS, PREFS, CURSOR, INDEX, DEMO
     global app_running, current_account, profiles, cursor_running
 
     root   = tempfile.mkdtemp(prefix="ferry-demo-")
-    # Cursor's own database is the one root that is not synthetic, and a demo
-    # that showed real conversation titles would defeat the point of one.
-    CURSOR = os.path.join(root, "no-cursor-in-a-demo")
+    # Never the real Cursor database, which would put real conversation titles
+    # on screen: an invented install with three conversations of its own.
+    CURSOR = _demo_cursor(root)
     CLAUDE = os.path.join(root, "Claude")
     SESS   = os.path.join(CLAUDE, "claude-code-sessions")
     PROJ   = os.path.join(root, "dot-claude", "projects")
@@ -1150,6 +1641,7 @@ def demo_setup():
     os.makedirs(VAULT, exist_ok=True)
 
     for n, (idx, title, cwd, model, turns, days, pruned, conns) in enumerate(DEMO_CHATS):
+        turns = len(DEMO_TALK.get(title, ())) or turns   # the list's count matches the chat
         acct, org = DEMO_ACCTS[idx][0], DEMO_ACCTS[idx][1]
         cli = f"{n + 1:08x}-4c7a-4f1b-9d2e-{n + 1:012x}"
         last, made = _demo_ms(days), _demo_ms(days + 2)
@@ -1164,11 +1656,11 @@ def demo_setup():
             d = os.path.join(PROJ, enc_cwd(cwd))
             os.makedirs(os.path.join(d, cli, "subagents"), exist_ok=True)
             with open(os.path.join(d, f"{cli}.jsonl"), "w", encoding="utf-8") as fh:
-                fh.write(_demo_transcript(title, model, turns, last))
+                fh.write(_demo_transcript(title, model, turns, last, cwd))
             for s in range(2 if n == 0 else 0):
                 with open(os.path.join(d, cli, "subagents", f"sub-{s}.jsonl"), "w",
                           encoding="utf-8") as fh:
-                    fh.write(_demo_transcript(title, model, 4, last))
+                    fh.write(_demo_transcript(title, model, 4, last, cwd))
 
     # A deleted chat: only a tombstone survives in the account, but the archive
     # still holds the record — which is the whole point of Restore.
@@ -1180,7 +1672,7 @@ def demo_setup():
     rec = {"sessionId": f"local_{tomb}", "cliSessionId": tomb,
            "title": "Rewrite the billing cron", "cwd": "/Users/dev/code/ledger",
            "model": "opus-5", "createdAt": _demo_ms(13), "lastActivityAt": gone,
-           "completedTurns": 46, "isArchived": False, "remoteMcpServersConfig": []}
+           "completedTurns": len(DEMO_TALK["Rewrite the billing cron"]), "isArchived": False, "remoteMcpServersConfig": []}
     arch = os.path.join(VAULT, "chats", "20260830-091200", acct0)
     os.makedirs(arch, exist_ok=True)
     with open(os.path.join(arch, f"local_{tomb}.json"), "w", encoding="utf-8") as fh:
@@ -1188,18 +1680,394 @@ def demo_setup():
     d = os.path.join(PROJ, enc_cwd(rec["cwd"]))
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, f"{tomb}.jsonl"), "w", encoding="utf-8") as fh:
-        fh.write(_demo_transcript(rec["title"], rec["model"], 46, gone))
+        fh.write(_demo_transcript(rec["title"], rec["model"], 46, gone, rec["cwd"]))
+
+    # The deleted chat's transcript has no record claiming it (the record is only
+    # in the archive), so scan already lists it as a source - under "Other
+    # sessions", with no cwd, which leaves it unopenable and unimportable. Stamp
+    # it as the desktop chat it was: it lists under "Desktop, no record", opens,
+    # and leaves the list again once Restore brings its record back.
+    p = os.path.join(PROJ, enc_cwd(rec["cwd"]), f"{tomb}.jsonl")
+    with open(p, encoding="utf-8") as fh:
+        stamped = [dict(json.loads(l), cwd=rec["cwd"], sessionId=tomb, entrypoint="claude-desktop",
+                        version="2.3.4", gitBranch="main") for l in fh if l.strip()]
+    for x in stamped:
+        if x["type"] == "assistant": x["message"]["model"] = "claude-opus-5"
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write("".join(json.dumps(x) + "\n" for x in stamped))
+
+    # Chats no account lists: a CLI or VS Code transcript and no record anywhere,
+    # filed under the folder name Claude Code derives from the cwd.
+    for sid, entry, cwd, model, branch, days, turns in DEMO_SOURCES:
+        d = os.path.join(PROJ, cc_folder(cwd))
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, f"{sid}.jsonl"), "w", encoding="utf-8") as fh:
+            fh.write(_demo_session(sid, entry, cwd, model, branch, turns, _demo_ms(days)))
+
+    # A chat started without picking a folder: the app ran it in a scratch
+    # workspace of its own, so its header reads "No folder". set_folder takes only
+    # a folder that exists, and the demo's /Users/dev paths don't, so a real one
+    # is made under the demo root to point it at: <root>/code/brand-site.
+    os.makedirs(os.path.join(root, "code", "brand-site"), exist_ok=True)
+    loose   = f"{10:08x}-4c7a-4f1b-9d2e-{10:012x}"
+    scratch = os.path.join(CLAUDE, "scratch-workspaces", "7b1e5c90-2d4f-4a8e-9c36-f05a1d8e2b47")
+    os.makedirs(scratch, exist_ok=True)
+    last = _demo_ms(2)
+    rec = {"sessionId": f"local_{loose}", "cliSessionId": loose,
+           "title": "Landing page hero copy", "cwd": scratch, "originCwd": scratch,
+           "model": "sonnet-5", "createdAt": _demo_ms(4), "lastActivityAt": last,
+           "completedTurns": 2, "isArchived": False, "remoteMcpServersConfig": []}
+    with open(os.path.join(SESS, acct0, org0, f"local_{loose}.json"), "w", encoding="utf-8") as fh:
+        json.dump(rec, fh, indent=1)
+    d = os.path.join(PROJ, cc_folder(scratch))
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, f"{loose}.jsonl"), "w", encoding="utf-8") as fh:
+        fh.write(_demo_session(loose, "claude-desktop", scratch, "claude-sonnet-5", "", [
+            ("write three options for the landing page hero",
+             "1. **Your old chats, in the account you use now.**\n"
+             "2. **Signed out of an account? Its chats aren't gone.**\n"
+             "3. **Move a Claude Code chat between accounts in one drag.**\n\n"
+             "Option 2 names the problem before the fix, which tends to read best above the fold.", []),
+            ("go with 2, and give me a subline under 20 words",
+             "> Ferry copies or moves a chat from an account you're signed out of into the one "
+             "you're using now.\n\nNineteen words, and it says what happens to the chat.", []),
+        ], last))
 
     json.dump({"lastKnownAccountUuid": DEMO_ACCTS[0][0]}, open(CFG, "w"))
     json.dump({a: nick for a, _o, _e, _n, nick in DEMO_ACCTS if nick}, open(LABELS, "w"))
     json.dump({"lastExportDir": downloads}, open(PREFS, "w"))
 
     prof = {a: {"email": e, "name": n} for a, _o, e, n, _l in DEMO_ACCTS if e}
-    app_running     = lambda: False
+    app_running     = lambda: _DEMO_OPEN["claude"]
     cursor_running  = lambda: False
     current_account = lambda: DEMO_ACCTS[0][0]
     profiles        = lambda: prof
+    DEMO = True
+    OPS.update(NB_OPS)                  # Nearby, stood in: see below
     return root
+
+# ---------- Nearby, stood in for `ui --demo` ----------
+# Nearby lives in Rust (src-tauri/src/share.rs): mDNS, a TCP port, X25519. The
+# browser demo has none of that, so this plays the network and the person at
+# the other computer, "Sam's PC". Every command returns the JSON share.rs
+# returns, and the state moves on by the clock each time the UI polls
+# nearby_state (every 800 ms), so the cards on screen are the app's own. A
+# received chat really lands: its transcript and record are written into the
+# demo tree the way share.rs::commit writes a chat that is new to the account.
+# Registered into OPS only by demo_setup(); the plain `ui` never has it.
+
+NB_PORT    = 53711                               # share.rs PORT
+NB_ASK_FOR = 150.0                               # share.rs ASK_FOR, seconds
+NB_ME  = {"name": "Dev's MacBook", "os": "macOS", "ip": "192.168.1.24"}
+NB_SAM = {"key": "Sam's PC 7c2e._ferry._tcp.local.", "id": "7c2e41a09b3d",
+          "addrs": [f"192.168.1.31:{NB_PORT}"], "name": "Sam's PC", "os": "Windows"}
+NB_PICK = "/Users/dev/code/field-notes"          # what "Choose…" picks in the demo
+# seconds: mDNS answer, handshake, Sam pressing Accept / Codes match, bytes moving
+NB_T = {"find": 1.4, "connect": 0.8, "accept": 1.8, "pair": 2.4, "move": 2.4,
+        "unreachable": 4.0}
+# what Sam sends: (title, its folder on Sam's PC, model, turns)
+DEMO_INCOMING = [
+    ("Offline sync for the field app", "C:\\Users\\sam\\code\\field-notes",  "sonnet-5", 29),
+    ("Profile the slow CSV import",    "C:\\Users\\sam\\code\\ledger-tools", "opus-5",   17),
+]
+NB_OUT_LIVE = ("connecting", "waiting", "confirm", "sending")   # share.rs send()/cancel()
+NB_IN_LIVE  = ("pairing", "asking", "receiving")                # share.rs pair_person()/dismiss()
+
+# incoming/outgoing are the public objects state() returns; inc/out are the
+# simulation's own clock and payload, dropped once a transfer ends
+_NB = {"on": False, "port": 0, "on_at": 0.0, "peers": [], "incoming": None,
+       "outgoing": None, "inc": None, "out": None, "auto_at": None, "auto_done": False,
+       "sam_declines": False, "n": 0}
+_NB_LOCK = threading.Lock()
+_NB_SEG  = re.compile(r"^[A-Za-z0-9_-]{1,128}$")                # share.rs safe_seg
+
+def _nb_code():                                  # share.rs handshake(): "{:03} {:03}"
+    n = int.from_bytes(os.urandom(4), "big") % 1_000_000
+    return f"{n // 1000:03d} {n % 1000:03d}"
+
+def _nb_dir(p):
+    """The demo's fictional /Users/dev counts as this machine for the picked folder."""
+    return bool(p) and (os.path.isdir(p) or p == NB_PICK)
+
+def _nb_lan(host):
+    """share.rs lan(): private, link-local or loopback IPv4; IPv6 loopback only.
+    None when it isn't an address at all."""
+    import ipaddress
+    try: ip = ipaddress.ip_address(host[1:-1] if host.startswith("[") else host)
+    except ValueError: return None
+    if ip.version == 6: return ip.is_loopback
+    return any(ip in ipaddress.ip_network(n) for n in
+               ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "127.0.0.0/8"))
+
+def _nb_parse_addr(s):                           # share.rs parse_addr()
+    s = s.strip()
+    full = s if ":" in s else f"{s}:{NB_PORT}"
+    host, _, port = full.rpartition(":")
+    lan = _nb_lan(host) if port.isdigit() and int(port) < 65536 else None
+    if lan is None:
+        raise RuntimeError(f"\"{s}\" isn't an address. It looks like 192.168.1.20:{NB_PORT}.")
+    if not lan:
+        raise RuntimeError("that address isn't on your local network, so Ferry won't send to it")
+    return full
+
+def _nb_state():                                 # share.rs state()
+    s, on = _NB, _NB["on"]
+    return json.loads(json.dumps({
+        "on": on, "name": NB_ME["name"], "port": s["port"], "os": NB_ME["os"],
+        "addrs": [f"{NB_ME['ip']}:{s['port']}"] if on else [],
+        "discovery": on, "discoveryError": "",
+        "peers": s["peers"] if on else [],
+        "incoming": s["incoming"], "outgoing": s["outgoing"]}))
+
+def _nb_pair(now):                               # share.rs pair_person(): Sam connects
+    s = _NB
+    if not s["on"] or (s["incoming"] and s["incoming"]["state"] in NB_IN_LIVE):
+        return False                             # off, or busy: Rust hangs up
+    s["incoming"] = {"xfer": os.urandom(4).hex(), "from": NB_SAM["name"], "os": NB_SAM["os"],
+                     "code": _nb_code(), "state": "pairing", "got": 0}
+    s["inc"] = {"t": now, "n": s["n"]}
+    return True
+
+def _nb_offer(now):                              # share.rs ask_person(): the offer arrives
+    s = _NB
+    i, q = s["incoming"], s["inc"]
+    n = q["n"]
+    title, cwd, model, turns = DEMO_INCOMING[n % len(DEMO_INCOMING)]
+    turns = len(DEMO_TALK.get(title, ())) or turns
+    cli  = f"5a{n:06x}-7b2d-4e8f-a1c6-2d9b0e7f4a58"
+    last = _demo_ms(0, 16) + n * 60_000          # newest in the demo's own calendar
+    body = _demo_transcript(title, model, turns, last - 5_960_000, cwd)
+    sub  = _demo_transcript(title, model, 4, last - 5_960_000, cwd)
+    q.update(t=now, body=body, sub=sub, rec={
+        "sessionId": f"local_{cli}", "cliSessionId": cli, "title": title, "cwd": cwd,
+        "model": model, "createdAt": last - 2 * 86_400_000, "lastActivityAt": last,
+        "completedTurns": turns})
+    s["incoming"] = {"xfer": i["xfer"], "from": i["from"], "os": i["os"], "title": title,
+                     "turns": turns, "bytes": len(body.encode()) + len(sub.encode()),
+                     "files": 2, "cwd": cwd, "cwdHere": _nb_dir(cwd),
+                     "code": i["code"], "state": "asking", "got": 0}
+
+def _nb_commit(q):
+    """share.rs commit() for a chat new to the account: transcripts first, then
+    a record built from a fixed set of fields. Returns commit()'s JSON."""
+    acct, org, rec = q["acct"], q["org"], q["rec"]
+    scope = scope_dir(acct, org)
+    if not os.path.isdir(scope): raise RuntimeError("that account has no folder on this machine")
+    cwd = (q.get("folder") or "").strip() or rec["cwd"]
+    if not cwd:
+        raise RuntimeError("this chat has no folder. Choose one on this machine to put it in.")
+    if any(seg in (".", "..") for seg in re.split(r"[\\/]", cwd)):
+        raise RuntimeError("that folder path isn't usable. Choose a folder on this machine.")
+    sid, cli = rec["sessionId"], rec["cliSessionId"]
+    dst = f"{scope}/{sid}.json"
+    if os.path.exists(dst):
+        raise RuntimeError("this account already has a different chat under that id. Nothing was changed.")
+    d = project_dir(cwd)
+    os.makedirs(os.path.join(d, cli, "subagents"), exist_ok=True)
+    with open(os.path.join(d, f"{cli}.jsonl"), "w", encoding="utf-8") as fh: fh.write(q["body"])
+    with open(os.path.join(d, cli, "subagents", "sub-0.jsonl"), "w", encoding="utf-8") as fh:
+        fh.write(q["sub"])
+    out = {"sessionId": sid, "cliSessionId": cli, "title": rec["title"], "titleSource": "auto",
+           "createdAt": rec["createdAt"], "lastActivityAt": rec["lastActivityAt"],
+           "lastFocusedAt": rec["lastActivityAt"], "completedTurns": rec["completedTurns"],
+           "isArchived": False, "model": rec["model"]}
+    t = template_record(scope)
+    for k in INHERIT:
+        if t.get(k) is not None: out[k] = t[k]
+    out["cwd"] = out["originCwd"] = cwd
+    snapshot(dst, "nearby")
+    with open(dst, "w", encoding="utf-8") as fh: json.dump(out, fh, indent=2)
+    tomb = f"{scope}/deleted_{cli}"
+    if os.path.exists(tomb): snapshot(tomb, "undelete"); os.remove(tomb)
+    _NB["n"] += 1                                # the next offer is a different chat
+    return {"ok": True, "wrote": dst, "cwd": cwd, "title": out["title"],
+            "claudeOpen": bool(app_running()), "known": False, "repointed": False,
+            "recordKept": False, "folderHere": _nb_dir(cwd), "written": 2, "kept": 0,
+            "acct": acct, "org": org}
+
+def _nb_tick():
+    """Advance both transfers to where the clock says they are."""
+    s, now = _NB, time.monotonic()
+    if s["on"] and not s["peers"] and now - s["on_at"] >= NB_T["find"]:
+        s["peers"] = [dict(NB_SAM)]              # mDNS resolved Sam
+    if s["on"] and s["auto_at"] is not None and now >= s["auto_at"]:
+        s["auto_at"] = None
+        _nb_pair(now)
+    o, p = s["outgoing"], s["out"]
+    if o and p:
+        dt = now - p["t"]
+        if o["state"] == "connecting":
+            if not p["sam"] and dt >= NB_T["unreachable"]:
+                o["state"], o["msg"] = "error", ("couldn't reach the other Ferry (connection timed out). "
+                    "Check that Nearby is on there, and that a firewall isn't blocking Ferry.")
+                s["out"] = None
+            elif p["sam"] and dt >= NB_T["connect"]:          # handshake done: run_send()
+                o.update(code=_nb_code(), to=NB_SAM["name"], os=NB_SAM["os"], state="confirm")
+                p["t"] = now
+        elif o["state"] == "confirm" and dt >= NB_ASK_FOR:    # confirm() timed out
+            o["state"], s["out"] = "cancelled", None
+        elif o["state"] == "waiting" and dt >= NB_T["accept"]:
+            if s["sam_declines"]:                             # {"t":"decline"}, no msg
+                s["sam_declines"] = False
+                o["state"], s["out"] = "declined", None
+            else:
+                o["state"], p["t"] = "sending", now
+        elif o["state"] == "sending":
+            o["sent"] = min(o["total"], int(o["total"] * dt / NB_T["move"]))
+            if dt >= NB_T["move"]:
+                o["sent"], o["state"], s["out"] = o["total"], "done", None
+    i, q = s["incoming"], s["inc"]
+    if i and q:
+        dt = now - q["t"]
+        if i["state"] == "pairing" and dt >= NB_T["pair"]:    # Sam pressed Codes match
+            _nb_offer(now)
+        elif i["state"] == "asking" and dt >= NB_ASK_FOR:
+            i["state"], s["inc"] = "expired", None
+        elif i["state"] == "receiving":
+            i["got"] = min(i["bytes"], int(i["bytes"] * dt / NB_T["move"]))
+            if dt >= NB_T["move"]:
+                i["got"] = i["bytes"]
+                try:
+                    i["result"] = _nb_commit(q)
+                    i["state"] = "done"
+                except Exception as e:
+                    i["state"], i["msg"] = "error", str(e)
+                s["inc"] = None
+
+def _nb_set(on):                                 # share.rs start() / stop()
+    s, now = _NB, time.monotonic()
+    if on:
+        if not s["on"]:
+            s.update(on=True, port=NB_PORT, on_at=now, peers=[])
+            after = os.environ.get("FERRY_DEMO_NEARBY_INCOMING")
+            if after and not s["auto_done"]:
+                s["auto_at"], s["auto_done"] = now + float(after), True
+        return _nb_state()
+    s.update(on=False, peers=[], auto_at=None)
+    o, i = s["outgoing"], s["incoming"]
+    if o and o["state"] == "confirm": o["state"], s["out"] = "cancelled", None
+    if i and i["state"] == "pairing":     i["state"], s["inc"] = "cancelled", None
+    elif i and i["state"] == "asking":    i["state"], s["inc"] = "declined", None
+    elif i and i["state"] == "receiving":
+        i["state"], i["msg"], s["inc"] = "error", "the connection closed", None
+    return _nb_state()
+
+def _nb_send(path, to):                          # share.rs send()
+    s = _NB
+    peer = next((p for p in s["peers"] if p["key"] == to), None) if s["on"] else None
+    full = None if peer else _nb_parse_addr(to)
+    o = s["outgoing"]
+    if o and o["state"] in NB_OUT_LIVE: raise RuntimeError("already sending a chat")
+    if str(path).startswith("cursor:"): raise RuntimeError("no such Cursor chat")
+    rec = read_rec(path)
+    if not rec: raise RuntimeError("chat unreadable")
+    if str(path).endswith(".jsonl"):             # no account owns it: the path IS its transcript
+        subs = glob.glob(f"{os.path.dirname(path)}/{os.path.basename(path)[:-6]}/subagents/*.jsonl")
+        tr = [{"exists": True, "size": os.path.getsize(path),       # main.rs source_parts()
+               "subagents": [{"size": os.path.getsize(x)} for x in subs]}]
+    else:
+        tr = [t for t in transcripts_for(rec) if t["exists"]]
+    if not tr:
+        raise RuntimeError("this chat's transcript is gone from disk, so there is nothing to send")
+    total = sum(t["size"] + sum(x["size"] for x in t["subagents"]) for t in tr)
+    s["outgoing"] = {"state": "connecting", "to": peer["name"] if peer else to,
+                     "title": rec.get("title"), "sent": 0, "total": total, "code": ""}
+    s["out"] = {"t": time.monotonic(), "sam": peer is not None or full in NB_SAM["addrs"]}
+    return {"ok": True}
+
+def _nb_answer(accept, acct, org, folder):       # share.rs answer()
+    s = _NB
+    if accept:
+        if not (_NB_SEG.match(acct) and _NB_SEG.match(org) and os.path.isdir(scope_dir(acct, org))):
+            raise RuntimeError("pick an account on this machine")
+        if folder and folder.strip() and not _nb_dir(folder):
+            raise RuntimeError(f"no such folder: {folder}")
+    i = s["incoming"]
+    if i and i["state"] == "asking" and s["inc"]:
+        if accept:
+            i["state"] = "receiving"
+            s["inc"].update(t=time.monotonic(), acct=acct, org=org, folder=folder)
+        else:
+            i["state"], s["inc"] = "declined", None
+        return {"ok": True}
+    if not accept and i and i["state"] == "pairing":            # hang up before the offer
+        i["state"], s["inc"] = "declined", None
+        return {"ok": True}
+    raise RuntimeError("that offer has already gone")
+
+def _nb_confirm(yes):                            # share.rs confirm_send()
+    s = _NB
+    o = s["outgoing"]
+    if not (o and o["state"] == "confirm" and s["out"]):
+        raise RuntimeError("nothing is waiting on that")
+    if yes: o["state"], s["out"]["t"] = "waiting", time.monotonic()
+    else:   o["state"], s["out"] = "cancelled", None
+    return _nb_state()
+
+def _nb_cancel():                                # share.rs cancel()
+    s = _NB
+    o = s["outgoing"]
+    if o and o["state"] in NB_OUT_LIVE: o["state"], s["out"] = "cancelled", None
+    return _nb_state()
+
+def _nb_dismiss():                               # share.rs dismiss()
+    s = _NB
+    if s["incoming"] and s["incoming"]["state"] not in NB_IN_LIVE: s["incoming"] = s["inc"] = None
+    if s["outgoing"] and s["outgoing"]["state"] not in NB_OUT_LIVE: s["outgoing"] = s["out"] = None
+    return _nb_state()
+
+def _nb_locked(fn):
+    def run(*a, **k):
+        with _NB_LOCK:
+            _nb_tick()
+            return fn(*a, **k)
+    return run
+
+# the same command names and argument names the app's invoke uses (main.rs)
+NB_OPS = {
+    "nearby":         _nb_locked(lambda on, **k: _nb_set(bool(on))),
+    "nearby_state":   _nb_locked(lambda **k: _nb_state()),
+    "nearby_send":    _nb_locked(lambda path, to, **k: _nb_send(path, str(to))),
+    "nearby_answer":  _nb_locked(lambda accept, acct="", org="", folder=None, **k:
+                                 _nb_answer(bool(accept), acct or "", org or "", folder)),
+    "nearby_confirm": _nb_locked(lambda yes, **k: _nb_confirm(bool(yes))),
+    "nearby_cancel":  _nb_locked(lambda **k: _nb_cancel()),
+    "nearby_dismiss": _nb_locked(lambda **k: _nb_dismiss()),
+    "pick_folder":    lambda **k: NB_PICK,       # main.rs pick_folder: Option<String>
+}
+
+def nb_demo_control(req):
+    """POST /api/demo/nearby, demo only: what Sam does, on cue from a recording.
+      {"action":"incoming"}             Sam starts sending now (Nearby must be on)
+      {"action":"incoming","delay":3}   ...in 3 s
+      {"action":"sam_declines"}         Sam declines the next chat sent to him
+      {"action":"sam_cancels"}          Sam hangs up while the code is still up
+      {"action":"reset"}                clear both cards
+      {"action":"claude_open"}          the Claude app is open: writes refused
+      {"action":"claude_quit"}          ...and quit again"""
+    a = req.get("action")
+    with _NB_LOCK:
+        _nb_tick()
+        s, now = _NB, time.monotonic()
+        if a == "incoming":
+            d = float(req.get("delay") or 0)
+            if d > 0: s["auto_at"], ok = now + d, s["on"]
+            else: ok = _nb_pair(now)
+        elif a == "sam_declines":
+            s["sam_declines"], ok = True, True
+        elif a == "sam_cancels":
+            i = s["incoming"]
+            ok = bool(i and i["state"] == "pairing")
+            if ok: i["state"], s["inc"] = "cancelled", None
+        elif a in ("claude_open", "claude_quit"):
+            _DEMO_OPEN["claude"], ok = a == "claude_open", True
+        elif a == "reset":
+            s.update(incoming=None, outgoing=None, inc=None, out=None, auto_at=None,
+                     sam_declines=False)
+            ok = True
+        else:
+            return {"__error": f"unknown action {a!r}"}
+        return {"ok": ok, "state": _nb_state()}
 
 def cmd_import(query, who):
     """Add a CLI or VS Code chat to an account. The chat is named by title or

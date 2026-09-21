@@ -159,8 +159,8 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 .bub pre.code{background:var(--code);border:1px solid var(--line);border-radius:10px;
  padding:12px 14px;overflow-x:auto}
 .bub pre.code code{font:12px/1.6 ui-monospace,"SF Mono",Menlo,monospace;white-space:pre}
-.bub pre.code[data-l]::before{content:attr(data-l);display:block;font-size:9.5px;
- text-transform:uppercase;letter-spacing:.08em;color:var(--faint);margin-bottom:7px;font-weight:700}
+.bub pre.code[data-l]::before{content:attr(data-l);display:block;font-size:10px;
+ text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:7px;font-weight:700}
 .bub table{border-collapse:collapse;font-size:12.5px;display:block;overflow-x:auto;max-width:100%}
 .bub th,.bub td{border:1px solid var(--line);padding:6px 11px;text-align:left}
 .bub th{background:var(--code);font-weight:640}
@@ -224,7 +224,7 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 .trow .fops{margin-top:0;flex:none;flex-wrap:nowrap}
 #ask{position:fixed;inset:0;display:none;place-items:center;background:var(--veil);z-index:46}
 #ask.on{display:grid}
-.askc{width:min(470px,calc(100vw - 40px));background:var(--panel);border:1px solid var(--line);border-radius:14px;
+.askc{width:min(510px,calc(100vw - 40px));background:var(--panel);border:1px solid var(--line);border-radius:14px;
  box-shadow:var(--sh);padding:20px 22px 16px}
 .askc h3{font-size:15px;font-weight:640;letter-spacing:-.01em}
 .askc .ct{margin-top:4px;color:var(--faint);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -528,16 +528,20 @@ document.addEventListener("keydown",e=>{
    so layout and drag and drop stay right, and the level is remembered. The
    browser-served UI leaves zoom to the browser. */
 const INAPP=!!window.__TAURI_INTERNALS__;
+// Nearby and zoom need the app; `ferry-cli.py ui --demo` stands both in and says so
+const DEMO=window.__FERRY_DEMO__===true;
+const NEARBY=INAPP||DEMO;
 const ZOOMS=[.67,.75,.8,.9,1,1.1,1.25,1.5];
 let zoomLv=1;
 function setZoom(z,say){
   zoomLv=ZOOMS.reduce((a,b)=>Math.abs(b-z)<Math.abs(a-z)?b:a);   // snap to a level
   try{localStorage.setItem("ferry.zoom",zoomLv);}catch(e){}
-  iv("set_zoom",{scale:zoomLv}).catch(()=>{});
+  if(INAPP)iv("set_zoom",{scale:zoomLv}).catch(()=>{});
+  else (document.body||document.documentElement).style.zoom=zoomLv;   // ui --demo only: the app zooms its webview
   if(say)toast("Zoom "+Math.round(zoomLv*100)+"%");   // the only thing that says so
 }
 const zoomBy=d=>setZoom(ZOOMS[Math.max(0,Math.min(ZOOMS.length-1,ZOOMS.indexOf(zoomLv)+d))],true);
-if(INAPP){
+if(INAPP||DEMO){
   document.addEventListener("keydown",e=>{
     if(!MODK(e)||e.altKey)return;
     if(e.key==="+"||e.key==="="||e.code==="NumpadAdd"){e.preventDefault();zoomBy(1);}
@@ -710,7 +714,7 @@ function pickDraw(){
   const old=$("#nbaddr"),typed=old?old.value:"",focused=old&&document.activeElement===old;
   m.innerHTML=list.map(x=>
     '<button class=mi role=menuitem data-k="'+esc(key(x))+'" title="'+esc(whoTip(x))+'">'+avatar(x)+
-    '<span>'+esc(short(x))+'</span>'+(x.isCurrent?'<em>signed in</em>':'')+
+    '<span>'+esc(short(x))+'</span>'+(isCur(x)?'<em>Cursor</em>':x.isCurrent?'<em>signed in</em>':'')+
     (key(x)===tgtKey?'<b>✓</b>':'')+'</button>').join("")+nbPickSection(list.length>0);
   m.style.left=b.left+"px";m.style.top=(b.bottom+4)+"px";m.className="on";
   m.onclick=ev=>ev.stopPropagation();          // typing an address must not close it
@@ -733,8 +737,10 @@ function ask(p,t,mv){
     '<div class=route>'+who(s,"tfrom")+mascot()+who(t,"tto")+'</div>'+   // the trip it is about to make
     (toCur?'<p>Cursor gets a new conversation with the same title and turns. '+
         'The Claude chat stays where it is.</p>'
-     :imp?'<p>'+to+' gets a record for it, so Claude lists it there like any other chat. '+
-        'The conversation stays where it is on disk, and the session stays resumable from the '+from+'.</p>'
+     :imp&&isCur(s)?'<p>Ferry writes this Cursor conversation as a Claude Code chat in its folder, and it shows up in '+to+
+        ' like any other chat. The Cursor conversation stays as it is.</p>'
+     :imp?'<p>Ferry gives it a record in '+to+', so Claude lists it there like any other chat. '+
+        'The conversation stays where it is on disk, and the session can still be resumed where it ran.</p>'
      :mv===null?'<p><b>Copy</b> keeps it in '+from+' as well. <b>Move</b> takes it out of '+from+
         ', and you can restore it from the deleted list.</p>'
      :mv?'<p>It moves to '+to+' and leaves '+from+', where you can restore it from the deleted list.</p>'
@@ -875,9 +881,9 @@ function drawSide(){
     const ini=isSrc(s)?srcMark(s):esc(((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase());
     const mail=s.profile&&s.profile.email;
     const em=(mail&&(!isSrc(s)||isCur(s)))?mail:"";
-    const mt=isCur(s)?s.chats.length+' chat'+(s.chats.length===1?'':'s')+(s.isCurrent?' · signed in':'')
+    const mt=isCur(s)?'Cursor · '+s.chats.length+' chat'+(s.chats.length===1?'':'s')+(s.isCurrent?' · signed in':'')
       :isSrc(s)?s.chats.length+' chat'+(s.chats.length===1?'':'s')+' · no account yet'
-      :s.chats.length+' chats'+(s.deleted.length?' · '+s.deleted.length+' deleted':'');
+      :s.chats.length+' chat'+(s.chats.length===1?'':'s')+(s.deleted.length?' · '+s.deleted.length+' deleted':'');
     return '<div class="acct '+(isSrc(s)?'src ':'')+(isCur(s)?'cur ':'')+(key(s)===scopeKey?'on':'')+'" data-k="'+key(s)+'" onclick="pick(\''+key(s)+'\')"'+
         (RICH?' title="'+esc(whoTip(s))+'"':'')+'>'+
       '<div class="av'+(isSrc(s)?' src'+srcCls(s):'')+'"'+(isSrc(s)?'':' style="background:hsl('+hue(s.acct)+' 42% 48%)"')+'>'+ini+'</div>'+
@@ -891,10 +897,10 @@ function drawSide(){
    +(R.length?'<div class=secl title="Chats Claude Code wrote outside the desktop app. Open one and add it to an account.">not in an account</div>'+R.map(row).join(""):"")
    +(s0&&!isSrc(s0)?'<div class=secl>rename</div><div style="padding:0 9px"><input id=nick placeholder="name this account" value="'+
       esc(s0.label||'')+'" onchange="setLabel(\''+s0.acct+'\',this.value)"></div>':'')
-   +'<div class=foot title="'+esc('sessions: '+((S.paths||{}).sessions||'?')+String.fromCharCode(10)+'projects: '+((S.paths||{}).projects||'?'))+'">Ferry '+esc(appVer())+' · '+A.length+' accounts · '+
-      A.reduce((a,x)=>a+x.chats.length,0)+' chats · '+
-      A.reduce((a,x)=>a+x.deleted.length,0)+' deleted'+
-      (R.length?'<br>'+R.reduce((a,x)=>a+x.chats.length,0)+' from the CLI and VS Code':'')+'</div>';
+   +'<div class=foot title="'+esc('sessions: '+((S.paths||{}).sessions||'?')+String.fromCharCode(10)+'projects: '+((S.paths||{}).projects||'?'))+'">Ferry&nbsp;'+esc(appVer())+' · '+A.length+'&nbsp;accounts · '+
+      A.reduce((a,x)=>a+x.chats.length,0)+'&nbsp;chats · '+
+      A.reduce((a,x)=>a+x.deleted.length,0)+'&nbsp;deleted'+
+      (R.length?'<br>'+R.reduce((a,x)=>a+x.chats.length,0)+'&nbsp;not in an account':'')+'</div>';
   const canDrop=el=>{
     if(!dragged||el.dataset.k===scopeKey)return false;
     const t=S.scopes.find(s=>key(s)===el.dataset.k),[from]=chatAt(dragged);
@@ -922,7 +928,7 @@ function drawEmpty(){ $("#read").innerHTML=diagPanel(); $("#list").innerHTML="";
 function drawList(){
   const s=scope();if(!s)return;
   const L=s.chats.filter(c=>!q||c.title.toLowerCase().includes(q));
-  $("#list").innerHTML='<input id=q placeholder="Search '+s.chats.length+' chats" value="'+esc(q)+'">'
+  $("#list").innerHTML='<input id=q placeholder="Search '+s.chats.length+' chat'+(s.chats.length===1?'':'s')+'" value="'+esc(q)+'">'
    +(L.length?L.map(c=>'<div class="ch '+(chatPath===c.path?'on':'')+'" draggable=true data-p="'+esc(c.path)+
       '" onclick="openChat(this.dataset.p)"'+
       // a CLI chat is known by the folder it ran in, so say which one
@@ -931,7 +937,7 @@ function drawList(){
       '<span class=t>'+esc(c.title)+'</span><span class=n>'+(c.turns||0)+'</span></div>').join("")
      :'<div class=empty style="padding:40px 10px">No match</div>')
    +(s.deleted.length?'<div class=secl>deleted</div>'+s.deleted.map(d=>'<div class="ch dead">'+
-      '<span class=t>'+d.id.slice(6,18)+'</span>'+
+      '<span class=t title="'+esc(d.id)+'">'+esc(d.title||d.id.slice(6,18))+'</span>'+
       '<button class="btn sm" onclick="undel(\''+d.id+'\')">Restore</button></div>').join(""):"");
   $("#q").oninput=e=>{q=e.target.value.toLowerCase();drawList();
     const i=$("#q");i.focus();i.setSelectionRange(i.value.length,i.value.length);};
@@ -1014,14 +1020,14 @@ function drawRead(d){
         ' messages. The '+held+' older ones are not loaded yet.</p>'+
         '<button class="btn sm" id=more onclick=loadAll()>Load all</button></div>':'')+
      (d.msgs.length?''
-    :'<div class=empty style="color:var(--warn)">Transcript is gone - pruned by retention.<br>Archiving prevents this.</div>')+
+    :'<div class=empty style="color:var(--warn)">Transcript is gone - pruned by retention.<br>A backup made before then still has a copy.</div>')+
    '</div>';
   fillBody(d.msgs);
 }
 
 const turn=m=>
      '<div class="turn '+m.role+'">'+
-       '<div class=who2>'+(m.role==="user"?"You":"Claude")+' · '+m.t.replace("T"," ")+'</div>'+
+       '<div class=who2>'+(m.role==="user"?"You":String(chatPath).startsWith("cursor:")?"Cursor":"Claude")+' · '+m.t.replace("T"," ")+'</div>'+
        '<div class=bub>'+(m.text?md(m.text):"")+
          (m.tools||[]).map(t=>{const i=t.indexOf(" - ");
            return '<span class=tchip><b>'+esc(i<0?t:t.slice(0,i))+'</b>'+(i<0?"":esc(t.slice(i+3)))+'</span>';}).join("")+
@@ -1146,7 +1152,7 @@ function nbMenu(e){e.stopPropagation();
 /* In Send to, for Claude and Cursor chats alike: a Cursor chat is written out
    in Claude Code's transcript shape for the send, and arrives as a Claude chat.
    A computer is chosen as "nb:" + its mDNS name. */
-const nbCanSend=()=>INAPP&&!!chatPath;
+const nbCanSend=()=>NEARBY&&!!chatPath;
 const nbPeer=k=>k&&String(k).startsWith("nb:")?NB.peers.find(p=>"nb:"+p.key===k)||null:null;
 const nbPicked=()=>nbCanSend()?nbPeer(tgtKey):null;
 const nbAny=()=>nbCanSend()&&NB.on;           // on, even with no computer found: the address box lives here
@@ -1399,7 +1405,7 @@ function nbOutgoing(out){
       out.msg||(out.state==="declined"?"They declined it, or didn't answer in time.":"Something went wrong."));
   }
 }
-if(INAPP){$("#nb").hidden=false;iv("nearby_state").then(s=>{NB=s;nbDraw();nbLoop();}).catch(()=>{});}
+if(NEARBY){$("#nb").hidden=false;iv("nearby_state").then(s=>{NB=s;nbDraw();nbLoop();}).catch(()=>{});}
 
 if(RICH){
   drawSkeleton();         // held at least 700 ms so a fast scan reads as loading, not a flicker
