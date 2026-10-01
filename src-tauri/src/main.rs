@@ -68,14 +68,41 @@ const ACCOUNT_SCOPED: [&str; 2] = ["remoteMcpServersConfig", "enabledMcpTools"];
 fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
 }
+/// Windows has no `date -r`, and spawning one would flash a console window. The
+/// local wall clock comes straight from kernel32 instead: no dependency, and no
+/// timezone arithmetic of our own to get wrong. kernel32 is already linked.
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct WinSystemTime { year: u16, month: u16, dow: u16, day: u16,
+                       hour: u16, min: u16, sec: u16, ms: u16 }
+#[cfg(target_os = "windows")]
+extern "system" { fn GetLocalTime(out: *mut WinSystemTime); }
+
+/// yyyymmdd-hhmmss, in local time, without pulling in chrono.
+///
+/// The format is not cosmetic: the vault is shared with the CLI, which writes
+/// `%Y%m%d-%H%M%S`, and `archived_copy_in` picks the copy to restore by
+/// comparing these names as strings. An epoch count sorts below every date this
+/// century, so a Windows app that stamped `1789039713` always lost to a
+/// CLI-written `20260914-120000`, however much newer it was.
 fn stamp() -> String {
-    // yyyymmdd-hhmmss without pulling in chrono
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    // Windows has no `date -r`; spawning one would only flash a console window
-    if cfg!(target_os = "windows") { return secs.to_string(); }
-    let out = Command::new("date").args(["-r", &secs.to_string(), "+%Y%m%d-%H%M%S"]).output();
-    out.ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-       .filter(|s| !s.is_empty()).unwrap_or_else(|| secs.to_string())
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: GetLocalTime only writes the struct it is handed, which is
+        // the layout kernel32 documents and cannot fail.
+        let mut t = WinSystemTime { year: 0, month: 0, dow: 0, day: 0,
+                                    hour: 0, min: 0, sec: 0, ms: 0 };
+        unsafe { GetLocalTime(&mut t) };
+        return format!("{:04}{:02}{:02}-{:02}{:02}{:02}",
+                       t.year, t.month, t.day, t.hour, t.min, t.sec);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let out = Command::new("date").args(["-r", &secs.to_string(), "+%Y%m%d-%H%M%S"]).output();
+        out.ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+           .filter(|s| !s.is_empty()).unwrap_or_else(|| secs.to_string())
+    }
 }
 /// Current Claude Code rule, read out of the shipped CLI:
 /// every character that is not [a-zA-Z0-9] becomes '-', runs are NOT collapsed.
@@ -241,18 +268,22 @@ mod archive_tests {
             let p = v.join(rel); std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, format!("{{\"title\":{:?}}}", title)).unwrap();
         };
+        // glob answers in the platform's own separators, so the path is read
+        // back one way to be said about one way
+        let kept = |vs: &str| super::archived_copy_in(vs, id).unwrap()
+            .to_string_lossy().replace('\\', "/");
         assert!(super::archived_copy_in(&vs, id).is_none(), "nothing kept yet");
         put(&format!("chats/20260901-100000/acct-a/{id}.json"), "from a backup");
-        assert!(super::archived_copy_in(&vs, id).unwrap().to_string_lossy().contains("chats/20260901"));
+        assert!(kept(&vs).contains("chats/20260901"), "{}", kept(&vs));
         // deleted in Ferry after that backup: the delete snapshot is the newer copy
         put(&format!("snapshots/20260905-120000-delete-{id}.json"), "at delete");
-        assert!(super::archived_copy_in(&vs, id).unwrap().to_string_lossy().contains("-delete-"));
+        assert!(kept(&vs).contains("-delete-"), "{}", kept(&vs));
         // and a later backup wins again
         put(&format!("chats/20260910-080000/acct-a/{id}.json"), "later backup");
-        assert!(super::archived_copy_in(&vs, id).unwrap().to_string_lossy().contains("chats/20260910"));
+        assert!(kept(&vs).contains("chats/20260910"), "{}", kept(&vs));
         // other snapshots of the same record (a rename, a move) are not restore sources
         put(&format!("snapshots/20260911-090000-rename-{id}.json"), "renamed");
-        assert!(super::archived_copy_in(&vs, id).unwrap().to_string_lossy().contains("chats/20260910"));
+        assert!(kept(&vs).contains("chats/20260910"), "{}", kept(&vs));
         let _ = std::fs::remove_dir_all(&v);
     }
 }
@@ -482,6 +513,34 @@ mod lockfile_tests {
         drop(holder);
         assert!(!path.exists(), "delete-on-close takes the file with the handle");
         assert!(!super::lock_held(&p), "once the app has gone it is not running");
+    }
+}
+
+/// The vault is shared with the CLI, so a Windows stamp has to be the same shape
+/// the CLI writes and sort against it correctly. Windows-only because on a Mac
+/// `date` has always answered in this shape.
+#[cfg(all(test, target_os = "windows"))]
+mod stamp_tests {
+    #[test]
+    fn a_windows_stamp_is_a_date_the_cli_can_be_compared_with() {
+        let s = super::stamp();
+        assert_eq!(s.len(), 15, "yyyymmdd-hhmmss is 15 characters: {s}");
+        assert_eq!(&s[8..9], "-", "the date and the time are separated: {s}");
+        assert!(s[..8].chars().chain(s[9..].chars()).all(|c| c.is_ascii_digit()),
+                "everything either side of the dash is a digit: {s}");
+
+        let (y, mo, d) = (&s[..4], &s[4..6], &s[6..8]);
+        assert!(("2020".."2100").contains(&y), "a plausible year: {y}");
+        assert!(("01"..="12").contains(&mo), "a real month: {mo}");
+        assert!(("01"..="31").contains(&d), "a real day: {d}");
+
+        // the regression this replaced: the app stamped an epoch count, and
+        // every epoch written so far begins with a 1, so it sorted below every
+        // date in this format - a restore comparing names picked the CLI's
+        // copy however old it was
+        assert!(s.as_str() > "1789039713", "a date must outrank the epochs the app wrote: {s}");
+        assert!(s.as_str() > "20200101-000000" && s.as_str() < "21000101-000000",
+                "and must sort between two dates either side of it: {s}");
     }
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
