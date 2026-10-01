@@ -107,6 +107,17 @@ main{display:grid;grid-template-columns:236px 296px minmax(0,1fr);height:calc(10
 #nick{width:100%;margin-top:6px;padding:5px 8px;border:1px solid var(--line);border-radius:7px;
  background:var(--bg);font-size:11px}
 
+/* the Claude profiles Ferry reads: a line each, and a way to add another */
+.loc{display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:9px}
+.loc:hover{background:var(--panel)}
+.loc .bd{flex:1;min-width:0}
+.loc .who{font-size:12px;font-weight:540;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.loc .mt{font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums;margin-top:1px}
+.lx{flex:none;border:0;background:none;color:var(--faint);cursor:pointer;font-size:15px;
+ line-height:1;padding:2px 6px;border-radius:7px}
+.lx:hover{background:var(--bg);color:var(--ink)}
+.warnt{color:var(--warn)}
+
 #q{width:100%;padding:7px 11px;border:1px solid var(--line);border-radius:9px;background:var(--panel);margin-bottom:8px}
 #q:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .ch{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:9px;cursor:grab;
@@ -466,8 +477,8 @@ async function transfer(path,t,mv){
     const play=fs=>new Promise(z=>{let i=0;(function f(){
       if(i>=fs.length||err)return z();m.innerHTML=drawMascot(fs[i++]);setTimeout(f,110);})();});
     const work=(toCur?iv("export_to_cursor",{path:path})
-                   :imp?iv("import_session",{path:path,acct:t.acct,org:t.org})
-                   :iv("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv}))
+                   :imp?iv("import_session",{path:path,acct:t.acct,org:t.org,root:t.root})
+                   :iv("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv,root:t.root}))
       .then(r=>{res=r;},e=>{err=String(e);}).finally(()=>{landed=true;});
     if(still)await work;
     else{await play(LOOK);do{await play(TRIP);}while(!landed&&!err);}
@@ -833,7 +844,7 @@ async function load(hold){
   if(!S.scopes.length){ drawEmpty(); return; }
   drawList();
 }
-const key=s=>s.acct+"|"+s.org;
+const key=s=>(s.root||"")+"|"+s.acct+"|"+s.org;
 const scope=()=>S.scopes.find(s=>key(s)===scopeKey);
 const label=s=>(s.profile&&s.profile.email)||s.label||s.acct.slice(0,8);
 
@@ -874,8 +885,54 @@ function diagPanel(){
     +'</div>';
 }
 
+/* ---------- locations ----------
+   Claude keeps one folder per profile, and a second account stays signed in by
+   having one of its own - that is what --user-data-dir does. Ferry reads the
+   built-in folders by itself; anything else has to be pointed at, and this is
+   where that is done. A machine with one profile sees one line and nothing to
+   decide.                                                                   */
+function locSection(){
+  const L=(S.locations||[]);
+  if(!L.length)return "";
+  // a built-in folder with nothing in it is not worth a line; an added one
+  // always is, or its Remove would be unreachable
+  const rows=L.filter(x=>!x.builtin||x.chats||x.label==="").map(x=>
+    '<div class=loc title="'+esc(x.path)+'">'+
+      '<div class=bd><div class=who>'+esc(x.label||"Claude")+'</div>'+
+      '<div class=mt>'+(x.exists
+        ?x.accounts+' account'+(x.accounts===1?'':'s')+' · '+x.chats+' chat'+(x.chats===1?'':'s')
+        :'<span class=warnt>folder not there</span>')+'</div></div>'+
+      (x.builtin?'':'<button class=lx title="Stop reading this folder" aria-label="Stop reading this folder" onclick="locRm(\''+esc(x.id)+'\')">×</button>')+
+    '</div>').join("");
+  return '<div class=secl title="The Claude profiles Ferry reads. Claude keeps a folder for each one; an account signed in with --user-data-dir has its own.">locations</div>'
+    +rows
+    +'<div style="padding:5px 9px 0"><button class="btn sm" onclick=locAdd() title="Point Ferry at another Claude profile folder">Add a folder</button></div>';
+}
+
+// The folder panel in the app; in a browser, where there is none, the path is
+// typed - the same way setting a chat's folder already works there.
+async function locAdd(){
+  let p=null;
+  if(INAPP){ try{ p=await iv("pick_folder"); }catch(e){ return toast(String(e),true); } }
+  else p=prompt("Folder Claude was started with, the one after --user-data-dir:","");
+  if(!p||!String(p).trim())return;
+  try{ await iv("add_location",{path:p}); }catch(e){ return toast(String(e),true); }
+  toast("Reading "+p);
+  refresh();
+}
+async function locRm(id){
+  const l=(S.locations||[]).find(x=>x.id===id);
+  if(!confirm("Stop reading "+((l&&l.path)||"this folder")+"?\n\nNothing in it is changed: the chats stay where Claude put them."))return;
+  try{ await iv("remove_location",{id:id}); }catch(e){ return toast(String(e),true); }
+  refresh();
+}
+
 function drawSide(){
   const s0=scope(),A=accts(),R=srcs();
+  // The same account can be signed in in two profiles with different chats in
+  // each, so say which folder a row came from - but only once that is a
+  // question, which on most machines it never is.
+  const multi=new Set(A.map(x=>x.root).filter(Boolean)).size>1;
   const row=s=>{
     const nm=RICH?short(s):label(s);
     const ini=isSrc(s)?srcMark(s):esc(((s.profile&&s.profile.name)||nm).slice(0,2).toUpperCase());
@@ -883,7 +940,8 @@ function drawSide(){
     const em=(mail&&(!isSrc(s)||isCur(s)))?mail:"";
     const mt=isCur(s)?'Cursor · '+s.chats.length+' chat'+(s.chats.length===1?'':'s')+(s.isCurrent?' · signed in':'')
       :isSrc(s)?s.chats.length+' chat'+(s.chats.length===1?'':'s')+' · no account yet'
-      :s.chats.length+' chat'+(s.chats.length===1?'':'s')+(s.deleted.length?' · '+s.deleted.length+' deleted':'');
+      :s.chats.length+' chat'+(s.chats.length===1?'':'s')+(s.deleted.length?' · '+s.deleted.length+' deleted':'')
+        +(multi&&s.rootLabel?' · '+esc(s.rootLabel):'');
     return '<div class="acct '+(isSrc(s)?'src ':'')+(isCur(s)?'cur ':'')+(key(s)===scopeKey?'on':'')+'" data-k="'+key(s)+'" onclick="pick(\''+key(s)+'\')"'+
         (RICH?' title="'+esc(whoTip(s))+'"':'')+'>'+
       '<div class="av'+(isSrc(s)?' src'+srcCls(s):'')+'"'+(isSrc(s)?'':' style="background:hsl('+hue(s.acct)+' 42% 48%)"')+'>'+ini+'</div>'+
@@ -895,6 +953,7 @@ function drawSide(){
    // Sessions Claude Code wrote outside the desktop app. They are listed under
    // the accounts because that is where they are heading, not beside them.
    +(R.length?'<div class=secl title="Chats Claude Code wrote outside the desktop app. Open one and add it to an account.">not in an account</div>'+R.map(row).join(""):"")
+   +locSection()
    +(s0&&!isSrc(s0)?'<div class=secl>rename</div><div style="padding:0 9px"><input id=nick placeholder="name this account" value="'+
       esc(s0.label||'')+'" onchange="setLabel(\''+s0.acct+'\',this.value)"></div>':'')
    +'<div class=foot title="'+esc('sessions: '+((S.paths||{}).sessions||'?')+String.fromCharCode(10)+'projects: '+((S.paths||{}).projects||'?'))+'">Ferry&nbsp;'+esc(appVer())+' · '+A.length+'&nbsp;accounts · '+
@@ -1083,9 +1142,9 @@ function btnSend(mv){const t=S.scopes.find(x=>key(x)===(RICH?tgtKey:$("#tgt").va
   RICH?ask(chatPath,t,mv):send(chatPath,t,mv);}
 function send(path,t,mv){if(RICH)return transfer(path,t,mv);
   if(mv==="toCursor")return op("export_to_cursor",{path:path},"Converted into Cursor");
-  op("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv},
+  op("copy_chat",{path:path,acct:t.acct,org:t.org,mv:mv,root:t.root},
   (mv?"Moved to ":"Copied to ")+label(t));}
-const undel=id=>{const s=scope();op("undelete_chat",{acct:s.acct,org:s.org,id:id},"Restored","Restoring…");};
+const undel=id=>{const s=scope();op("undelete_chat",{acct:s.acct,org:s.org,id:id,root:s.root},"Restored","Restoring…");};
 const setLabel=(a,v)=>op("set_label",{acct:a,name:v},"Saved");
 async function backup(){
   try{const r=await iv("run_vault");
@@ -1227,10 +1286,11 @@ async function nbSend(to){
   nbLoop();nbCards();
 }
 async function nbAnswer(yes){
-  let acct="",org="";
-  if(yes){const s=$("#nbacct");if(!s)return;[acct,org]=s.value.split("|");}
+  let acct="",org="",root="";
+  // the option's value is a scope key: profile, account, org
+  if(yes){const s=$("#nbacct");if(!s)return;[root,acct,org]=s.value.split("|");}
   nbChose=yes&&!!nbFolder;
-  try{await iv("nearby_answer",{accept:yes,acct:acct,org:org,folder:yes?nbFolder:null});}
+  try{await iv("nearby_answer",{accept:yes,acct:acct,org:org,folder:yes?nbFolder:null,root:root});}
   catch(e){if(yes)return toast(String(e),true);}          // Claude open, say: the card stays up
   if(!yes){nbClose();setTimeout(()=>iv("nearby_dismiss").catch(()=>{}),300);return;}
   if(NB.incoming){NB.incoming.state="receiving";nbCards();}   // the trip starts now, not at the next poll
