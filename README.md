@@ -67,6 +67,7 @@ Ferry fixes both. It reads the files Claude Code already writes, lets you carry 
 | **Download** | save a whole Claude, CLI or VS Code conversation as Markdown, plain text or JSON, anywhere you choose. A Cursor chat can be downloaded after it's added to an account |
 | **Delete and undelete** | deletes are reversible; restore from another account or from the archive |
 | **Back up** | one button archives every Claude chat record and every transcript, subagent transcripts included (Cursor's own database isn't copied) |
+| **Read another profile** | Claude keeps one folder per profile, so a second account signed in with `--user-data-dir` has chats Ferry would never see. Point Ferry at that folder under **locations** and its accounts join the list, to copy and move between like any other |
 | **Nearby** | send a chat from an account, Cursor, the CLI or VS Code to someone else's Ferry on the same Wi-Fi, Mac or Windows. It arrives as a Claude chat, both screens show the same six-digit code first, and receiving works with Claude open. Off until you turn it on. Desktop app only |
 | **Zoom** | Ctrl/Cmd + and − (or Ctrl/Cmd + scroll), Ctrl/Cmd 0 to reset; the level is remembered |
 | **Keyboard** | F5 or Ctrl/Cmd+R re-reads from disk, Ctrl/Cmd+W closes a chat, Enter confirms a card, Esc cancels |
@@ -248,6 +249,7 @@ Reading SQLite from Rust means bundling it, which cost about 1 MB (1.4.0); Nearb
 ```
 ~/.ferry/
   chats/<timestamp>/<account>/   chat records, one snapshot per run
+                                 <profile>-<account>/ for an added profile's accounts
   projects/                      every transcript, subagents included
   snapshots/                     an automatic copy before each change
   labels.json                    your account nicknames
@@ -258,6 +260,25 @@ Reading SQLite from Rust means bundling it, which cost about 1 MB (1.4.0); Nearb
 ```
 
 The archive is yours, outside anything Claude Code manages. Once a chat is in it, deletion becomes cosmetic — restore it into whichever account you want.
+
+## More than one Claude profile
+
+Claude keeps its state in one folder per *profile*, not one per machine. A second window started with `--user-data-dir` gets its own, which is how a second account stays signed in beside the first — and every chat in it is invisible to anything reading only the default folder.
+
+Ferry finds the built-in folders by itself: on macOS `~/Library/Application Support/Claude`, on Windows both `%APPDATA%\Claude` and the Microsoft Store container. Any other folder has to be pointed at once, under **locations** in the sidebar — or from the CLI:
+
+```bash
+./ferry-cli.py locations                                  # the folders Ferry reads
+./ferry-cli.py locations add "C:\ClaudeAccounts\Account2"  # also read this one
+./ferry-cli.py locations rm c6f554c7                      # stop reading it
+```
+
+The folder is the one that comes after `--user-data-dir`: it holds `claude-code-sessions` and `config.json`. Ferry refuses a folder that is not a Claude profile, and one that overlaps a folder it already reads, which would list the same chats twice. Removing a location only forgets the path — nothing inside it is touched.
+
+Accounts from an added folder behave like any other: copy, move, rename, delete, restore, back up, and send over Nearby. Two things follow from profiles being separate:
+
+- **The same account can appear twice**, once per profile, with different chats in each. Ferry says which folder each one came from once more than one of them has that account.
+- **A write waits only for the Claude that has that profile open.** On Windows each profile holds its own lockfile, so a chat can be copied into a profile whose window is closed while another Claude window stays open. On macOS there is one process list and nothing in it says which folder the app was started with, so any Claude still blocks every write.
 
 ## Nearby
 
@@ -325,6 +346,9 @@ The Microsoft Store build of Claude runs in a container that redirects `%APPDATA
 so anything outside it — Ferry, or a terminal you opened yourself — finds `%APPDATA%\Claude`
 empty. Ferry checks both and uses the one with the newest chats. If it still comes back empty,
 the window lists every path it looked at; include that in an issue.
+
+**I keep a second account signed in with `--user-data-dir`. Ferry doesn't list it.**
+That profile has a folder of its own, and Ferry only reads the built-in ones until it is told otherwise. Add the folder under **locations** in the sidebar, or `./ferry-cli.py locations add <folder>`, and its accounts appear with the rest.
 
 **Is it affiliated with Anthropic?**
 No. Ferry is an independent tool that reads local files written by Claude Code.

@@ -4,6 +4,9 @@
   ./ferry-cli.py ui                    serve the app UI at localhost:7777
   ./ferry-cli.py ui --demo             same UI, synthetic data, no Claude needed
   ./ferry-cli.py list                  print accounts + chat counts
+  ./ferry-cli.py locations             folders ferry reads accounts from
+  ./ferry-cli.py locations add <dir>   also read a Claude profile folder
+  ./ferry-cli.py locations rm <id>     stop reading one (nothing is deleted)
   ./ferry-cli.py vault                 archive every chat + transcript into ~/.ferry
   ./ferry-cli.py export <text|id> [md|txt|json]   save a chat to ~/Downloads
   ./ferry-cli.py import <text|id> <account>       add a CLI or VS Code chat
@@ -66,7 +69,146 @@ IDB   = f"{CLAUDE}/IndexedDB"
 VAULT = f"{HOME}/.ferry"
 LABELS= f"{VAULT}/labels.json"
 PREFS = f"{VAULT}/prefs.json"
+LOCS  = f"{VAULT}/locations.json"
 PORT  = 7777
+
+# ---------- the folders accounts are read from ----------
+# Claude keeps its state in one folder per *profile*, not one per machine:
+# --user-data-dir gives a window its own, which is how a second account stays
+# signed in beside the first. Ferry reads the built-in folders by itself; any
+# other folder has to be pointed at, and is remembered in locations.json. That
+# list starts empty, so a machine nobody has added a folder on reads exactly
+# what it always did.
+
+def sess_in(root): return os.path.join(root, "claude-code-sessions")
+def cfg_in(root):  return os.path.join(root, "config.json")
+def idb_in(root):  return os.path.join(root, "IndexedDB")
+
+def norm_dir(p):
+    """The same folder said two ways: Windows mixes / and \\ and ignores case,
+    and a trailing separator means nothing anywhere."""
+    s = (p or "").strip().rstrip("/\\").replace("\\", "/")
+    return s.lower() if sys.platform == "win32" else s
+
+def same_dir(a, b): return norm_dir(a) == norm_dir(b)
+
+def root_id(path):
+    """Short, stable and derived from the path, so a root can be named without
+    passing a whole path around. The app computes this identically."""
+    import hashlib
+    return hashlib.sha256(norm_dir(path).encode("utf-8")).hexdigest()[:8]
+
+def builtin_roots():
+    # `ui --demo` points CLAUDE at a synthetic tree; the real folders must stay
+    # out of it, or a demo screen would carry real chat titles
+    if DEMO: return [CLAUDE]
+    return claude_dirs_windows() if sys.platform == "win32" else [CLAUDE]
+
+def builtin_label(p):
+    """A built-in folder that is not the one in use still has to be told apart
+    from the one that is."""
+    if sys.platform == "win32":
+        return "Microsoft Store" if "/packages/claude_" in norm_dir(p) else "AppData"
+    return os.path.basename(p.rstrip("/\\"))
+
+def stored_locations():
+    try:
+        v = json.load(open(LOCS, encoding="utf-8"))
+        return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+    except Exception: return []
+
+def write_locations(all_):
+    os.makedirs(VAULT, exist_ok=True)
+    with open(LOCS, "w", encoding="utf-8") as f: json.dump(all_, f, indent=1)
+
+def roots():
+    """Every folder to read accounts from, built-in ones first. Deduped: the
+    same folder listed twice would list every chat in it twice."""
+    out, seen = [], set()
+    def add(path, label, builtin):
+        n = norm_dir(path)
+        if not n or n in seen: return
+        seen.add(n)
+        out.append({"id": root_id(path), "path": path, "label": label, "builtin": builtin})
+    for p in builtin_roots():
+        add(p, "" if same_dir(p, CLAUDE) else builtin_label(p), True)
+    for l in stored_locations():
+        p = l.get("path")
+        if not isinstance(p, str): continue
+        add(p, (l.get("label") or "").strip() or os.path.basename(p.rstrip("/\\")), False)
+    return out
+
+def root_by_id(rid):
+    return next((r for r in roots() if r["id"] == rid), None)
+
+def primary_root():
+    """The folder Claude itself is using: where a chat goes when nothing says
+    otherwise, and the one root that is always in the list."""
+    return next((r for r in roots() if same_dir(r["path"], CLAUDE)),
+                {"id": root_id(CLAUDE), "path": CLAUDE, "label": "", "builtin": True})
+
+def dest_root(rid):
+    if not rid: return primary_root()
+    r = root_by_id(rid)
+    if not r: raise RuntimeError("ferry is no longer reading that folder")
+    return r
+
+def root_of(path):
+    """Which root a chat record belongs to. Every write is checked this way."""
+    for r in roots():
+        if under(sess_in(r["path"]), str(path)): return r
+    raise RuntimeError("path is outside every sessions folder\n  path: %s\n  roots: %s"
+                       % (path, ", ".join(sess_in(r["path"]) for r in roots())))
+
+def clashing_root(existing, p):
+    """A folder that is, holds, or sits inside one we already read. Any of the
+    three would list the same chats twice."""
+    for r in existing:
+        if same_dir(r, p): return "ferry already reads that folder"
+        if under(r, p) or under(p, r):
+            return "that folder overlaps one ferry already reads:\n  %s" % r
+    return None
+
+def checked_location(p):
+    p = (p or "").strip().rstrip("/\\")
+    if not p: raise RuntimeError("no folder given")
+    if not os.path.isdir(p): raise RuntimeError(f"no such folder: {p}")
+    clash = clashing_root([r["path"] for r in roots()], p)
+    if clash: raise RuntimeError(clash)
+    if not os.path.isdir(sess_in(p)) and not os.path.exists(cfg_in(p)):
+        raise RuntimeError("that folder is not a Claude profile: it has no "
+                           "claude-code-sessions folder and no config.json. Point ferry "
+                           "at the folder Claude was started with, the one after "
+                           "--user-data-dir")
+    return p
+
+def location_list():
+    """What each folder is, and how much is in it - so a folder that turns out
+    to hold nothing says so, instead of looking as though it worked."""
+    out = []
+    for r in roots():
+        recs = glob.glob(f"{glob.escape(sess_in(r['path']))}/*/*/local_*.json")
+        out.append(dict(r, exists=os.path.isdir(r["path"]),
+                        accounts=len({scope_of(f)[0] for f in recs}), chats=len(recs)))
+    return out
+
+def add_location(path):
+    p = checked_location(path)
+    all_ = stored_locations()
+    all_.append({"path": p, "label": os.path.basename(p.rstrip("/\\")),
+                 "added": int(datetime.now().timestamp() * 1000)})
+    write_locations(all_)
+    return {"ok": True, "id": root_id(p), "locations": location_list()}
+
+def remove_location(rid):
+    r = root_by_id(rid)
+    if r and r["builtin"]:
+        raise RuntimeError("that is one of Claude's own folders; ferry always reads it")
+    before = stored_locations()
+    after = [l for l in before if root_id(l.get("path") or "") != rid]
+    if len(after) == len(before): raise RuntimeError("ferry is not reading that folder")
+    write_locations(after)
+    return {"ok": True, "locations": location_list()}
 
 # account-scoped fields that must NOT follow a chat into another account
 ACCOUNT_SCOPED = ("remoteMcpServersConfig", "enabledMcpTools")
@@ -228,8 +370,20 @@ def app_running():
         return bool(out)
     except Exception: return False
 
-def current_account():
-    try: return json.load(open(CFG, encoding="utf-8")).get("lastKnownAccountUuid")
+def app_running_in(root):
+    """A write into one profile only has to wait for the Claude that has *that*
+    profile open. On Windows every profile holds its own lockfile, so the
+    question can be asked per folder. Elsewhere there is one process list and
+    nothing in it says which folder the app was started with, so the answer
+    stays the cautious one: any Claude blocks every write, as it always did."""
+    if DEMO: return app_running()      # the demo decides this for itself
+    if sys.platform == "win32": return _lock_held(os.path.join(root, "lockfile"))
+    return app_running()
+
+def current_account(root=None):
+    try:
+        return json.load(open(cfg_in(root) if root else CFG,
+                              encoding="utf-8")).get("lastKnownAccountUuid")
     except Exception: return None
 
 def export_dir():
@@ -518,6 +672,9 @@ def source_scopes(claimed):
             kind, name = ("other", "Other sessions")
         g = groups.setdefault(kind, {
             "acct": f"source:{kind}", "org": "source", "kind": "source",
+            # a source belongs to no profile: these chats are on the machine,
+            # not in anybody's account, which is why they are listed at all
+            "root": "", "rootLabel": "",
             "source": kind, "sourceName": name, "chats": [], "deleted": [],
             "connectors": {}, "cwds": {}, "isCurrent": False, "label": "", "profile": None})
         g["chats"].append({
@@ -549,17 +706,24 @@ def session_index():
 def scan():
     """Full inventory: every account/org scope, its chats and tombstones."""
     cur, labs, profs = current_account(), labels(), profiles()
+    RS = roots()
+    # each profile is signed into its own account, so "the one you are signed
+    # into" is a question per folder, not per machine
+    cur_in = {r["id"]: current_account(r["path"]) for r in RS}
+    def blank(r, acct, org):
+        return {"acct":acct, "org":org, "chats":[], "deleted":[], "connectors":{}, "cwds":{},
+                "root":r["id"], "rootPath":r["path"], "rootLabel":r["label"],
+                "rootBuiltin":r["builtin"], "isCurrent":cur_in.get(r["id"])==acct,
+                "label":labs.get(acct,""), "profile":profs.get(acct)}
     scopes = {}
     claimed = set()          # transcripts some account already answers for
-    for f in glob.glob(f"{SESS}/*/*/local_*.json"):
+    for r in RS:
+      for f in glob.glob(f"{glob.escape(sess_in(r['path']))}/*/*/local_*.json"):
         acct, org = scope_of(f)
         rec = read_rec(f)
         if not rec: continue
-        key = f"{acct}|{org}"
-        s = scopes.setdefault(key, {"acct":acct,"org":org,"chats":[],"deleted":[],
-                                    "connectors":{}, "cwds":{}, "isCurrent":acct==cur,
-                                    "label":labs.get(acct,""),
-                                    "profile":profs.get(acct)})
+        key = f"{r['id']}|{acct}|{org}"
+        s = scopes.setdefault(key, blank(r, acct, org))
         tr = transcripts_for(rec)
         claimed.update(t["id"] for t in tr if t.get("id"))
         s["chats"].append({
@@ -576,12 +740,11 @@ def scan():
             if isinstance(m,dict) and m.get("name"):
                 s["connectors"][m["name"]] = s["connectors"].get(m["name"],0)+1
         s["cwds"][rec.get("cwd","")] = s["cwds"].get(rec.get("cwd",""),0)+1
-    for f in glob.glob(f"{SESS}/*/*/deleted_*"):
+    for r in RS:
+      for f in glob.glob(f"{glob.escape(sess_in(r['path']))}/*/*/deleted_*"):
         acct, org = scope_of(f)
-        key = f"{acct}|{org}"
-        s = scopes.setdefault(key, {"acct":acct,"org":org,"chats":[],"deleted":[],
-                                    "connectors":{},"cwds":{},"isCurrent":acct==cur,
-                                    "label":labs.get(acct,""),"profile":profs.get(acct)})
+        key = f"{r['id']}|{acct}|{org}"
+        s = scopes.setdefault(key, blank(r, acct, org))
         sid = "local_" + os.path.basename(f)[len("deleted_"):]
         try: when = int(open(f).read().strip())
         except Exception: when = None
@@ -606,6 +769,7 @@ def scan():
     return {"exportDir": export_dir(), "scopes": ordered + sources,
             "current": cur, "appRunning": app_running(),
             "cursorRunning": cursor_running(), "vault": VAULT,
+            "locations": location_list(),
             "version": APP_VERSION}
 
 # ---------- mutations ----------
@@ -624,14 +788,28 @@ def guard():
     if app_running():
         raise RuntimeError("Claude desktop is running - quit it first, then retry")
 
-def scope_dir(acct, org): return f"{SESS}/{acct}/{org}"
+def guard_in(root):
+    """The same refusal, but only for the profile being written to."""
+    if app_running_in(root["path"]):
+        raise RuntimeError("Claude desktop is running%s - quit it first, then retry"
+                           % (f" with the {root['label']} profile" if root["label"] else ""))
 
-def op_copy(src_path, dst_acct, dst_org, move=False):
-    guard(); owned(src_path)
+def scope_dir(acct, org, root=None): return f"{sess_in((root or primary_root())['path'])}/{acct}/{org}"
+
+def op_copy(src_path, dst_acct, dst_org, move=False, root=None):
+    owned(src_path)
+    src_root = root_of(src_path)
+    # no root named means the account is in the same profile as the chat, which
+    # is every copy on a machine nobody has added a folder on
+    dst = dest_root(root) if root else src_root
+    # a move takes the record out of the source as well, so both ends have to be
+    # free of a Claude that could put it back
+    if move: guard_in(src_root)
+    guard_in(dst)
     rec = read_rec(src_path)
     if not rec: raise RuntimeError("source chat unreadable")
     sid = rec["sessionId"]
-    dst_dir = scope_dir(dst_acct, dst_org); os.makedirs(dst_dir, exist_ok=True)
+    dst_dir = scope_dir(dst_acct, dst_org, dst); os.makedirs(dst_dir, exist_ok=True)
     dst = f"{dst_dir}/{sid}.json"
     out = dict(rec)
     for k in ACCOUNT_SCOPED: out.pop(k, None)   # connector uuids are per-account
@@ -653,19 +831,20 @@ def template_record(d):
     try: return json.load(open(max(recs, key=os.path.getmtime), encoding="utf-8")) or {}
     except Exception: return {}
 
-def op_import(path, acct, org):
+def op_import(path, acct, org, root=None):
     """Give a CLI or VS Code session the per-account record it never had, so an
     account claims it and it becomes an ordinary chat: listed by Claude, and
     from here on copyable, movable and deletable like any other. The transcript
     is not touched, so the session stays resumable where it came from."""
-    guard()
+    dst = dest_root(root)
+    guard_in(dst)
     if not (str(path).endswith(".jsonl") and under(PROJ, str(path))):
         raise RuntimeError(f"path is outside the projects folder\n  path: {path}\n  root: {PROJ}")
     info = read_session(path)
     if not info: raise RuntimeError("transcript unreadable")
     if not info["cwd"]: raise RuntimeError("this transcript does not say which folder it ran in")
     sid = os.path.splitext(os.path.basename(path))[0]
-    d = scope_dir(acct, org)
+    d = scope_dir(acct, org, dst)
     if not os.path.isdir(d): raise RuntimeError("that account has no folder on this machine")
     # The id the chat keeps for good, derived from the session it already has:
     # importing the same session twice updates one record instead of making a
@@ -711,7 +890,7 @@ def op_set_folder(path, folder):
     names in its header and resumes in, and where the conversation is looked up.
     So changing only the cwd would show the new folder and lose the conversation
     with it - every transcript has to be findable under the new name too."""
-    guard(); owned(path)
+    owned(path); guard_in(root_of(path))
     rec = read_rec(path)
     if not rec: raise RuntimeError("chat unreadable")
     was    = rec.get("cwd") or ""
@@ -738,7 +917,7 @@ def op_set_folder(path, folder):
     return {"ok": True, "cwd": folder, "was": was, "linked": linked, "copied": copied}
 
 def op_rename(path, title):
-    guard(); owned(path)
+    owned(path); guard_in(root_of(path))
     rec = read_rec(path)
     if not rec: raise RuntimeError("chat unreadable")
     snapshot(path, "rename")
@@ -747,7 +926,7 @@ def op_rename(path, title):
     return {"ok": True, "title": title}
 
 def op_delete(path):
-    guard(); owned(path)
+    owned(path); guard_in(root_of(path))
     rec = read_rec(path); sid = rec["sessionId"]
     snapshot(path, "delete")
     d = os.path.dirname(path)
@@ -755,14 +934,18 @@ def op_delete(path):
     os.remove(path)
     return {"ok": True}
 
-def op_undelete(acct, org, sid):
-    """Restore from the vault, or from any other account that still has it."""
-    guard()
+def op_undelete(acct, org, sid, root=None):
+    """Restore from the vault, or from any other account that still has it -
+    in any profile, not only the one Claude is using."""
+    dst = dest_root(root)
+    guard_in(dst)
     short = sid[len("local_"):]
-    dst_dir = scope_dir(acct, org)
+    dst_dir = scope_dir(acct, org, dst)
     src = None
-    for cand in glob.glob(f"{glob.escape(SESS)}/*/*/{glob.escape(sid)}.json"):
-        src = cand; break
+    for r in roots():
+        for cand in glob.glob(f"{glob.escape(sess_in(r['path']))}/*/*/{glob.escape(sid)}.json"):
+            src = cand; break
+        if src: break
     if not src: src = archived_copy(sid)
     if not src: raise RuntimeError("no surviving copy found in any account or the vault")
     rec = read_rec(src)
@@ -777,9 +960,11 @@ def op_vault():
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     base  = f"{VAULT}/chats/{stamp}"; os.makedirs(base, exist_ok=True)
     n_rec = n_tr = 0; nbytes = 0
-    for f in glob.glob(f"{SESS}/*/*/local_*.json"):
+    for r_ in roots():
+      for f in glob.glob(f"{glob.escape(sess_in(r_['path']))}/*/*/local_*.json"):
         acct, _ = scope_of(f)
-        d = f"{base}/{acct}"; os.makedirs(d, exist_ok=True)
+        d = f"{base}/{acct}" if not r_["label"] else f"{base}/{slug(r_['label'])}-{acct}"
+        os.makedirs(d, exist_ok=True)
         shutil.copy2(f, d); n_rec += 1
         rec = read_rec(f)
         if not rec: continue
@@ -879,15 +1064,19 @@ OPS = {
     "chat_detail":   lambda path, **k: chat_detail(path),
     "chat_full":     lambda path, **k: chat_full(path),
     "export_chat":   lambda **k: op_export(**k),
-    "copy_chat":     lambda path, acct, org, mv=False, **k: op_copy(path, acct, org, move=mv),
-    "import_session":lambda path, acct, org, **k: (
-        op_cursor_import(str(path)[len("cursor:"):], acct, org)
-        if str(path).startswith("cursor:") else op_import(path, acct, org)),
+    "copy_chat":     lambda path, acct, org, mv=False, root=None, **k:
+                         op_copy(path, acct, org, move=mv, root=root),
+    "import_session":lambda path, acct, org, root=None, **k: (
+        op_cursor_import(str(path)[len("cursor:"):], acct, org, root=root)
+        if str(path).startswith("cursor:") else op_import(path, acct, org, root=root)),
     # the browser has no native folder panel, so the UI asks for the path itself
     "set_folder":    lambda path, folder=None, **k: op_set_folder(path, folder),
     "rename_chat":   lambda path, title, **k: op_rename(path, title),
     "delete_chat":   lambda path, **k: op_delete(path),
-    "undelete_chat": lambda acct, org, id, **k: op_undelete(acct, org, id),
+    "undelete_chat": lambda acct, org, id, root=None, **k: op_undelete(acct, org, id, root=root),
+    "locations":     lambda **k: location_list(),
+    "add_location":  lambda path, **k: add_location(path),
+    "remove_location": lambda id, **k: remove_location(id),
     "set_label":     lambda acct, name, **k: (set_label(acct, name), {"ok": True})[1],
     "run_vault":     lambda **k: op_vault(),
     "export_to_cursor": lambda path, **k: op_cursor_export(path),
@@ -921,12 +1110,18 @@ class H(BaseHTTPRequestHandler):
         cmd, args = req.get("cmd"), (req.get("args") or {})
         fn = OPS.get(cmd)
         if not fn: return self._send({"__error": f"unknown command {cmd!r}"}, 400)
-        # a transcript is a legitimate target now: it is what a source chat is
+        # a transcript is a legitimate target now: it is what a source chat is,
+        # and a chat can be in any profile ferry reads, not only the built-in one
         p = args.get("path")
-        if p and not (str(p).startswith("cursor:") or under(SESS, str(p)) or
-                      (str(p).endswith(".jsonl") and under(PROJ, str(p)))):
+        sessions = [sess_in(r["path"]) for r in roots()]
+        # add_location's "path" is the folder being added, which is by definition
+        # outside everything read so far; checked_location is its own gate
+        if cmd != "add_location" and p and not (
+                str(p).startswith("cursor:") or any(under(s, str(p)) for s in sessions) or
+                (str(p).endswith(".jsonl") and under(PROJ, str(p)))):
             return self._send({"__error": f"path is outside the sessions and projects folders"
-                                          f"\n  path: {p}\n  roots: {SESS}\n         {PROJ}"}, 400)
+                                          f"\n  path: {p}\n  roots: "
+                                          + "\n         ".join(sessions + [PROJ])}, 400)
         try:
             return self._send(fn(**args))
         except TypeError as e:
@@ -1005,11 +1200,12 @@ def op_export(path, fmt="md", **_):
 
 def cmd_export(query, fmt="md"):
     hits = []
-    for f in glob.glob(f"{SESS}/*/*/local_*.json"):
-        rec = read_rec(f)
-        if not rec: continue
-        if query.lower() in (rec.get("title","")).lower() or query in rec.get("sessionId",""):
-            hits.append((f, rec))
+    for r_ in roots():
+        for f in glob.glob(f"{glob.escape(sess_in(r_['path']))}/*/*/local_*.json"):
+            rec = read_rec(f)
+            if not rec: continue
+            if query.lower() in (rec.get("title","")).lower() or query in rec.get("sessionId",""):
+                hits.append((f, rec))
     if not hits: return print(f"no chat matching {query!r}")
     if len(hits) > 1:
         seen = {}
@@ -1048,12 +1244,47 @@ def cmd_list():
             continue
         who = s["profile"]["email"] if s["profile"] else (s["label"] or "unidentified")
         cur = "  <= CURRENT" if s["isCurrent"] else ""
-        print(f"{s['acct'][:8]} / {s['org'][:8]}  {who}{cur}")
+        where = f"  [{s['rootLabel']}]" if s.get("rootLabel") else ""
+        print(f"{s['acct'][:8]} / {s['org'][:8]}  {who}{where}{cur}")
         print(f"   {len(s['chats'])} chats, {len(s['deleted'])} deleted")
         print(f"   connectors: {', '.join(list(s['connectors'])[:6]) or '-'}")
         for c in s["chats"][:5]:
             print(f"     - {c['title'][:58]:60} {ts(c['last'])}")
         print()
+    L = st.get("locations") or []
+    if len(L) > 1 or any(not x["builtin"] for x in L):
+        print("locations")
+        for x in L:
+            mark = "" if x["builtin"] else f"  [{x['id']}]"
+            miss = "" if x["exists"] else "  (folder not there)"
+            print(f"   {x['label'] or 'Claude':16} {x['accounts']} accounts, "
+                  f"{x['chats']} chats{mark}{miss}")
+            print(f"      {x['path']}")
+        print()
+
+def cmd_locations(args):
+    """Show, add or forget the Claude profile folders ferry reads. A refusal
+    here is an answer, not a crash, so it is said in one line."""
+    try:
+        if args and args[0] == "add":
+            if len(args) < 2: print("usage: ferry-cli.py locations add <folder>"); return
+            r = add_location(args[1])
+            print(f"reading {args[1]}  [{r['id']}]")
+        elif args and args[0] in ("rm", "remove"):
+            if len(args) < 2: print("usage: ferry-cli.py locations rm <id>"); return
+            remove_location(args[1])
+            print(f"forgot {args[1]} - nothing in the folder was changed")
+        elif args:
+            print("usage: ferry-cli.py locations [add <folder> | rm <id>]"); return
+    except RuntimeError as e:
+        print(f"ferry: {e}")
+        return
+    for x in location_list():
+        kind = "built in" if x["builtin"] else x["id"]
+        miss = "" if x["exists"] else "  (folder not there)"
+        print(f"{(x['label'] or 'Claude'):16} {kind:10} "
+              f"{x['accounts']} accounts, {x['chats']} chats{miss}")
+        print(f"   {x['path']}")
 
 # ---------- demo mode ----------
 # `ui --demo` serves the real interface against a synthetic Claude tree in a
@@ -1617,7 +1848,7 @@ _DEMO_OPEN = {"claude": False}
 
 def demo_setup():
     """Build the synthetic tree and point every root at it."""
-    global CLAUDE, SESS, PROJ, CFG, IDB, VAULT, LABELS, PREFS, CURSOR, INDEX, DEMO
+    global CLAUDE, SESS, PROJ, CFG, IDB, VAULT, LABELS, PREFS, CURSOR, INDEX, LOCS, DEMO
     global app_running, current_account, profiles, cursor_running
 
     root   = tempfile.mkdtemp(prefix="ferry-demo-")
@@ -1633,6 +1864,7 @@ def demo_setup():
     LABELS = os.path.join(VAULT, "labels.json")
     PREFS  = os.path.join(VAULT, "prefs.json")
     INDEX  = os.path.join(VAULT, "sessions.json")   # follows the vault
+    LOCS   = os.path.join(VAULT, "locations.json")  # so does the list of folders
 
     for a, o, *_ in DEMO_ACCTS:
         os.makedirs(os.path.join(SESS, a, o), exist_ok=True)
@@ -1740,7 +1972,8 @@ def demo_setup():
     prof = {a: {"email": e, "name": n} for a, _o, e, n, _l in DEMO_ACCTS if e}
     app_running     = lambda: _DEMO_OPEN["claude"]
     cursor_running  = lambda: False
-    current_account = lambda: DEMO_ACCTS[0][0]
+    # the demo tree is one profile, so it answers the same whichever is asked for
+    current_account = lambda root=None: DEMO_ACCTS[0][0]
     profiles        = lambda: prof
     DEMO = True
     OPS.update(NB_OPS)                  # Nearby, stood in: see below
@@ -2095,22 +2328,27 @@ def cmd_import(query, who):
         return
     if len(want) > 1:
         print("matches more than one account:")
-        for s in want: print(f"   {s['acct'][:8]}  {(s['profile'] or {}).get('email') or s['label'] or '-'}")
+        for s in want:
+            where = f"  in {s['rootLabel']}" if s.get("rootLabel") else ""
+            print(f"   {s['acct'][:8]}  "
+                  f"{(s['profile'] or {}).get('email') or s['label'] or '-'}{where}")
         return
     t = want[0]
-    r = op_import(chat["path"], t["acct"], t["org"])
+    r = op_import(chat["path"], t["acct"], t["org"], root=t.get("root"))
     name = (t["profile"] or {}).get("email") or t["label"] or t["acct"][:8]
+    if t.get("rootLabel"): name += f" ({t['rootLabel']})"
     print(f"added {r['title'][:58]!r} ({r['turns']} turns) from {src['sourceName']} to {name}")
     print(f"  -> {r['wrote']}")
 
 def cmd_folder(query, folder):
     """Point a chat at the folder it belongs to."""
     hits = []
-    for f in glob.glob(f"{SESS}/*/*/local_*.json"):
-        rec = read_rec(f)
-        if not rec: continue
-        if query.lower() in (rec.get("title","")).lower() or query in (rec.get("sessionId") or ""):
-            hits.append((f, rec))
+    for r_ in roots():
+        for f in glob.glob(f"{glob.escape(sess_in(r_['path']))}/*/*/local_*.json"):
+            rec = read_rec(f)
+            if not rec: continue
+            if query.lower() in (rec.get("title","")).lower() or query in (rec.get("sessionId") or ""):
+                hits.append((f, rec))
     if not hits: return print(f"no chat matching {query!r}")
     if len({r["sessionId"] for _, r in hits}) > 1:
         print("matches more than one chat:")
@@ -2504,7 +2742,7 @@ def _ferry_wrote(path):
     except Exception:
         return False
 
-def op_cursor_import(cid, acct, org):
+def op_cursor_import(cid, acct, org, root=None):
     """Convert one Cursor conversation into a Claude chat.
 
     This is the one place Ferry writes a transcript rather than only the little
@@ -2512,14 +2750,15 @@ def op_cursor_import(cid, acct, org):
     its conversations in a database. The file is named after the Cursor
     conversation, so converting the same chat twice rewrites the one file
     instead of leaving a second copy."""
-    guard()
+    dst_root = dest_root(root)
+    guard_in(dst_root)
     # an id in full is a primary key lookup; a prefix still has to be searched
     chat = cursor_chat(cid) or next(
         (x for x in cursor_chats() if x["id"].startswith(cid)), None)
     if not chat: raise RuntimeError(f"no Cursor chat {cid!r}")
     if not chat["folder"]:
         raise RuntimeError("that Cursor chat has no folder on this machine")
-    if not os.path.isdir(scope_dir(acct, org)):
+    if not os.path.isdir(scope_dir(acct, org, dst_root)):
         raise RuntimeError("that account has no folder on this machine")
     msgs = cursor_messages(chat["id"])
     if not msgs: raise RuntimeError("that Cursor chat has nothing readable in it")
@@ -2537,7 +2776,7 @@ def op_cursor_import(cid, acct, org):
             "Nothing was changed." % dst)
     snapshot(dst, "transcript")          # does nothing when there is no file yet
     write_transcript(dst, msgs, chat["folder"], chat["id"])
-    rec = op_import(dst, acct, org)
+    rec = op_import(dst, acct, org, root=dst_root["id"])
     # the record's title comes from the first prompt; Cursor already named it
     if chat["title"] and chat["title"] != "(unnamed)":
         op_rename(rec["wrote"], chat["title"])
@@ -2563,12 +2802,12 @@ def cursor_scope():
                 "branch": "", "version": "", "source": "cursor",
                 "path": "cursor:" + c["id"]} for c in chats]
         out.sort(key=lambda c: c["last"] or 0, reverse=True)
-        return {"acct": "source:cursor", "org": "source", "kind": "source",
+        return {"acct": "source:cursor", "org": "source", "kind": "source", "root": "", "rootLabel": "",
                 "source": "cursor", "sourceName": "Cursor", "chats": out,
                 "deleted": [], "connectors": {}, "cwds": {},
                 "isCurrent": bool(prof), "label": "", "profile": prof}
     except Exception:
-        return {"acct": "source:cursor", "org": "source", "kind": "source",
+        return {"acct": "source:cursor", "org": "source", "kind": "source", "root": "", "rootLabel": "",
                 "source": "cursor", "sourceName": "Cursor", "chats": [],
                 "deleted": [], "connectors": {}, "cwds": {},
                 "isCurrent": False, "label": "", "profile": None}
@@ -2920,6 +3159,7 @@ def cmd_ui():
 if __name__ == "__main__":
     a = sys.argv[1] if len(sys.argv)>1 else "ui"
     if   a=="list":  cmd_list()
+    elif a=="locations": cmd_locations(sys.argv[2:])
     elif a=="vault": print(json.dumps(op_vault(), indent=1))
     elif a=="export": cmd_export(sys.argv[2], sys.argv[3] if len(sys.argv)>3 else "md")
     elif a=="import":
