@@ -259,6 +259,8 @@ Reading SQLite from Rust means bundling it, which cost about 1 MB (1.4.0); Nearb
 
 The archive is yours, outside anything Claude Code manages. Once a chat is in it, deletion becomes cosmetic — restore it into whichever account you want.
 
+Every `<timestamp>` here is local time as `yyyymmdd-hhmmss`. The app and the CLI write into the same vault, and a restore picks the newest copy by comparing those names, so both write the same shape on both platforms.
+
 ## Nearby
 
 Send a chat from an account, Cursor, the CLI or VS Code to another person's Ferry on the same network. It works between a Mac and a Windows PC in either direction, and whatever it came from, it arrives as a Claude chat. Nearby is in the desktop app only.
