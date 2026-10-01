@@ -26,6 +26,15 @@ import json, os, re, shutil, sys, glob, subprocess, tempfile, threading, time, u
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+if sys.platform == "win32":
+    # Python prints through the console's ANSI code page on Windows, so a chat
+    # titled with an em dash, an ellipsis or anything non-Latin came out as "?"
+    # - including the "..." this script itself puts on a title it cut. The files
+    # are read and written as UTF-8 already; this is the terminal only.
+    for _s in (sys.stdout, sys.stderr):
+        try: _s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError): pass   # a stream that cannot be reconfigured
+
 HOME  = (os.environ.get("USERPROFILE") or os.path.expanduser("~")) \
         if sys.platform == "win32" else os.path.expanduser("~")
 
