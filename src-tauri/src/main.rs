@@ -56,11 +56,261 @@ fn claude_dir() -> String {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn claude_dir() -> String { format!("{}/.config/Claude", home()) }
 
-fn sess()  -> String { format!("{}/claude-code-sessions", claude_dir()) }
-fn cfg()   -> String { format!("{}/config.json", claude_dir()) }
-fn idb()   -> String { format!("{}/IndexedDB", claude_dir()) }
+fn sess()  -> String { sess_in(&claude_dir()) }
+fn cfg()   -> String { cfg_in(&claude_dir()) }
 fn proj()  -> String { format!("{}/.claude/projects", home()) }
 fn vault() -> String { format!("{}/.ferry", home()) }
+
+/* ---------- the folders accounts are read from ----------
+
+   Claude keeps its state in one folder per *profile*, not one per machine:
+   `--user-data-dir` gives a second window its own, and that is how a second
+   account is kept signed in alongside the first. Ferry used to read a single
+   folder - the built-in one with the newest chats - so every account in any
+   other folder was invisible, the same way the Store build's chats were
+   invisible before Ferry looked inside the MSIX container.
+
+   So a root is any folder Ferry reads accounts from: the built-in ones, plus
+   the folders someone pointed Ferry at, remembered in ~/.ferry/locations.json.
+   The list of extra folders starts empty, so a machine nobody has added one on
+   behaves exactly as before.                                                  */
+
+fn sess_in(root: &str) -> String { format!("{}/claude-code-sessions", root) }
+fn cfg_in(root: &str)  -> String { format!("{}/config.json", root) }
+fn idb_in(root: &str)  -> String { format!("{}/IndexedDB", root) }
+fn locations_path()    -> String { format!("{}/locations.json", vault()) }
+
+#[derive(Clone)]
+struct Root {
+    /// Short, stable, and derived from the path, so the UI can name a root
+    /// without passing a whole path back and forth.
+    id: String,
+    path: String,
+    /// What to show beside an account when more than one root has it. Empty for
+    /// the folder Claude is using now, which needs no qualifying.
+    label: String,
+    builtin: bool,
+}
+
+/// The same folder said two ways. Windows mixes "/" and "\" depending on
+/// whether a path came from a format! or from the folder panel, and ignores
+/// case; a trailing separator means nothing anywhere.
+fn norm_dir(p: &str) -> String {
+    let s = p.trim().trim_end_matches(['/', '\\']).replace('\\', "/");
+    if cfg!(windows) { s.to_ascii_lowercase() } else { s }
+}
+fn same_dir(a: &str, b: &str) -> bool { norm_dir(a) == norm_dir(b) }
+
+fn root_id(path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(norm_dir(path).as_bytes()).iter().take(4)
+        .map(|b| format!("{b:02x}")).collect()
+}
+
+fn leaf(p: &str) -> String {
+    Path::new(p.trim_end_matches(['/', '\\'])).file_name()
+        .map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| p.to_string())
+}
+
+/// Where the desktop app puts a profile without being told otherwise.
+#[cfg(target_os = "windows")]
+fn builtin_roots() -> Vec<String> { claude_dirs() }
+#[cfg(not(target_os = "windows"))]
+fn builtin_roots() -> Vec<String> { vec![claude_dir()] }
+
+/// A built-in root that is not the one in use still has to be told apart from
+/// the one that is: on Windows a direct install and the Store build can both
+/// hold chats, and until now only the newer of the two was read at all.
+fn builtin_label(p: &str) -> String {
+    if cfg!(target_os = "windows") {
+        if norm_dir(p).contains("/packages/claude_") { return "Microsoft Store".into(); }
+        return "AppData".into();
+    }
+    leaf(p)
+}
+
+fn stored_locations() -> Vec<Value> {
+    read_json(&locations_path()).and_then(|v| v.as_array().cloned()).unwrap_or_default()
+}
+
+/// Every folder to read accounts from, built-in ones first. Deduped: the same
+/// folder listed twice would list every chat in it twice.
+fn roots() -> Vec<Root> {
+    merge_roots(builtin_roots(), stored_locations(), &claude_dir())
+}
+
+/// Kept apart from the machine so the merging can be tested: which folders win,
+/// how they are named, and that nothing appears twice.
+fn merge_roots(builtin: Vec<String>, stored: Vec<Value>, primary: &str) -> Vec<Root> {
+    let mut out: Vec<Root> = vec![];
+    let mut seen: Vec<String> = vec![];
+    let add = |out: &mut Vec<Root>, seen: &mut Vec<String>,
+               path: String, label: String, builtin: bool| {
+        let n = norm_dir(&path);
+        if n.is_empty() || seen.contains(&n) { return; }
+        seen.push(n);
+        out.push(Root { id: root_id(&path), path, label, builtin });
+    };
+    for p in builtin {
+        let label = if same_dir(&p, primary) { String::new() } else { builtin_label(&p) };
+        add(&mut out, &mut seen, p, label, true);
+    }
+    for l in stored {
+        let Some(p) = l["path"].as_str() else { continue };
+        let label = l["label"].as_str().map(str::trim).filter(|s| !s.is_empty())
+            .map(String::from).unwrap_or_else(|| leaf(p));
+        add(&mut out, &mut seen, p.to_string(), label, false);
+    }
+    out
+}
+
+fn root_by_id(id: &str) -> Option<Root> { roots().into_iter().find(|r| r.id == id) }
+
+/// The folder Claude itself is using. Where a chat goes when nothing says
+/// otherwise, and the one root that is always in the list.
+fn primary_root() -> Root {
+    let p = claude_dir();
+    roots().into_iter().find(|r| same_dir(&r.path, &p))
+        .unwrap_or(Root { id: root_id(&p), path: p, label: String::new(), builtin: true })
+}
+
+/// Which root a chat record belongs to. Every write is checked this way, so a
+/// path from outside every folder we read cannot be written through.
+fn root_of(path: &str) -> Result<Root, String> {
+    let all = roots();
+    all.iter().find(|r| under(&sess_in(&r.path), path)).cloned().ok_or_else(|| {
+        let list = all.iter().map(|r| sess_in(&r.path)).collect::<Vec<_>>().join("\n         ");
+        format!("path is outside every sessions folder\n  path: {}\n  roots: {}", path, list)
+    })
+}
+
+#[cfg(test)]
+mod roots_tests {
+    use serde_json::json;
+
+    fn paths(rs: &[super::Root]) -> Vec<String> { rs.iter().map(|r| r.path.clone()).collect() }
+
+    #[test]
+    fn the_folder_claude_is_using_needs_no_label_and_the_others_do() {
+        let primary = if cfg!(windows) { "C:\\Users\\a\\AppData\\Roaming\\Claude" }
+                      else { "/Users/a/Library/Application Support/Claude" };
+        let rs = super::merge_roots(vec![primary.to_string()], vec![], primary);
+        assert_eq!(rs.len(), 1);
+        assert_eq!(rs[0].label, "", "the profile in use is not qualified");
+        assert!(rs[0].builtin);
+
+        // an added folder is named after itself, so two of the same account can
+        // be told apart on screen
+        let added = if cfg!(windows) { "C:\\ClaudeAccounts\\Account2" } else { "/tmp/Account2" };
+        let rs = super::merge_roots(vec![primary.to_string()],
+                                    vec![json!({ "path": added })], primary);
+        assert_eq!(rs.len(), 2);
+        assert_eq!(rs[1].label, "Account2", "a folder with no label of its own is named after itself");
+        assert!(!rs[1].builtin);
+        assert_eq!(rs[1].label, super::leaf(added));
+
+        // and a label someone chose wins over the folder name
+        let rs = super::merge_roots(vec![primary.to_string()],
+                                    vec![json!({ "path": added, "label": " Work " })], primary);
+        assert_eq!(rs[1].label, "Work", "a chosen label is used, trimmed");
+    }
+
+    #[test]
+    fn the_same_folder_is_never_read_twice() {
+        let primary = if cfg!(windows) { "C:\\Claude" } else { "/Claude" };
+        // said with a trailing separator, and - on Windows - in another case
+        let again = if cfg!(windows) { "c:/claude\\" } else { "/Claude/" };
+        let rs = super::merge_roots(vec![primary.to_string()],
+                                    vec![json!({ "path": again })], primary);
+        assert_eq!(paths(&rs), vec![primary.to_string()],
+                   "a stored folder that is already built in adds nothing");
+
+        let a = if cfg!(windows) { "C:\\one" } else { "/one" };
+        let rs = super::merge_roots(vec![primary.to_string(), primary.to_string()],
+                                    vec![json!({ "path": a }), json!({ "path": a })], primary);
+        assert_eq!(paths(&rs), vec![primary.to_string(), a.to_string()],
+                   "nor does the same folder listed twice");
+    }
+
+    #[test]
+    fn a_root_id_is_the_folder_said_any_way() {
+        let a = if cfg!(windows) { "C:\\ClaudeAccounts\\Account2" } else { "/x/Account2" };
+        let b = if cfg!(windows) { "C:/ClaudeAccounts/Account2\\" } else { "/x/Account2/" };
+        assert_eq!(super::root_id(a), super::root_id(b), "{a} and {b} are one folder");
+        assert_ne!(super::root_id(a), super::root_id(&format!("{a}3")));
+        assert_eq!(super::root_id(a).len(), 8, "short enough to pass around");
+        if cfg!(windows) {
+            assert_eq!(super::root_id(a), super::root_id(&a.to_ascii_uppercase()),
+                       "Windows does not care about case");
+        }
+    }
+
+    #[test]
+    fn a_folder_has_to_be_a_claude_profile_and_must_not_overlap_one_we_read() {
+        let base = std::env::temp_dir().join(format!("ferry-loc-{}", std::process::id()));
+        let p = base.to_string_lossy().to_string();
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert!(super::checked_location(&p).is_err(), "a folder that is not there");
+        assert!(super::checked_location("  ").is_err(), "nothing at all");
+        std::fs::create_dir_all(&base).unwrap();
+        let err = super::checked_location(&p).unwrap_err();
+        assert!(err.contains("--user-data-dir"), "says what to point at instead: {err}");
+
+        // either half of a profile is enough to recognise one
+        std::fs::create_dir_all(base.join("claude-code-sessions")).unwrap();
+        assert_eq!(super::checked_location(&format!("{p}\\")).unwrap(), p,
+                   "and the answer comes back without its trailing separator");
+        std::fs::remove_dir_all(base.join("claude-code-sessions")).unwrap();
+        std::fs::write(base.join("config.json"), "{}").unwrap();
+        assert!(super::checked_location(&p).is_ok(), "a config.json on its own also says profile");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_folder_that_overlaps_one_we_read_is_refused() {
+        let root = if cfg!(windows) { "C:\\ClaudeAccounts\\Account2" } else { "/x/Account2" };
+        let have = vec![root.to_string()];
+        assert!(super::clashing_root(&have, root).unwrap().contains("already reads"),
+                "the very same folder");
+        assert!(super::clashing_root(&have, &format!("{root}/claude-code-sessions"))
+                    .unwrap().contains("overlaps"), "a folder inside it");
+        let outside = if cfg!(windows) { "C:\\ClaudeAccounts" } else { "/x" };
+        assert!(super::clashing_root(&have, outside).unwrap().contains("overlaps"),
+                "and the folder that holds it");
+        let sibling = if cfg!(windows) { "C:\\ClaudeAccounts\\Account3" } else { "/x/Account3" };
+        assert!(super::clashing_root(&have, sibling).is_none(), "a sibling is fine");
+    }
+}
+
+/// A folder someone can add: it has to be a Claude profile, and it must not
+/// overlap one we already read, or its chats would be listed twice.
+fn checked_location(p: &str) -> Result<String, String> {
+    let p = p.trim().trim_end_matches(['/', '\\']).to_string();
+    if p.is_empty() { return Err("no folder given".into()); }
+    if !Path::new(&p).is_dir() { return Err(format!("no such folder: {p}")); }
+    let have: Vec<String> = roots().iter().map(|r| r.path.clone()).collect();
+    if let Some(clash) = clashing_root(&have, &p) { return Err(clash); }
+    if !Path::new(&sess_in(&p)).is_dir() && read_json(&cfg_in(&p)).is_none() {
+        return Err("that folder is not a Claude profile: it has no claude-code-sessions \
+                    folder and no config.json. Point Ferry at the folder Claude was \
+                    started with, the one after --user-data-dir.".into());
+    }
+    Ok(p)
+}
+
+/// A folder that is, holds, or sits inside one we already read. Any of the
+/// three would list the same chats twice.
+fn clashing_root(existing: &[String], p: &str) -> Option<String> {
+    for r in existing {
+        if same_dir(r, p) { return Some("Ferry already reads that folder".into()); }
+        if under(r, p) || under(p, r) {
+            return Some(format!("that folder overlaps one Ferry already reads:\n  {r}"));
+        }
+    }
+    None
+}
 
 /// Connector uuids and tool grants belong to the account that created them.
 const ACCOUNT_SCOPED: [&str; 2] = ["remoteMcpServersConfig", "enabledMcpTools"];
@@ -490,6 +740,25 @@ fn guard() -> Result<(), String> {
     if app_running() { Err("Claude desktop is running. Quit it first, then retry.".into()) }
     else { Ok(()) }
 }
+
+/// A write into one profile only has to wait for the Claude that has *that*
+/// profile open. On Windows every profile holds its own lockfile, so the
+/// question can be asked per folder. Elsewhere there is one process list and
+/// nothing in it says which folder the app was started with, so the answer
+/// stays the cautious one: any Claude blocks every write, as it always did.
+#[cfg(target_os = "windows")]
+fn app_running_in(root: &str) -> bool { lock_held(&format!("{}\\lockfile", root)) }
+#[cfg(not(target_os = "windows"))]
+fn app_running_in(_root: &str) -> bool { app_running() }
+
+fn guard_in(root: &Root) -> Result<(), String> {
+    if !app_running_in(&root.path) { return Ok(()); }
+    Err(if root.label.is_empty() {
+        "Claude desktop is running. Quit it first, then retry.".to_string()
+    } else {
+        format!("Claude is open with the {} profile. Quit that window first, then retry.", root.label)
+    })
+}
 fn snapshot(p: &str, tag: &str) {
     if !Path::new(p).exists() { return; }
     let name = Path::new(p).file_name().unwrap_or_default().to_string_lossy().to_string();
@@ -521,7 +790,8 @@ fn profiles() -> Value {
         // ("Ali Hamza Kamboh"), so capture both and prefer the former.
         r"(?s)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}).{0,24}?email_address.{0,4}?([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})(?:.{0,16}?full_name.{0,4}?([A-Za-z0-9 ._\-]{2,40}))?(?:.{0,16}?display_name.{0,4}?([A-Za-z0-9 ._\-]{2,40}))?"
     ).unwrap();
-    for e in walkdir::WalkDir::new(idb()).into_iter().filter_map(|e| e.ok()) {
+    let dbs: Vec<String> = roots().iter().map(|r| idb_in(&r.path)).collect();
+    for e in dbs.iter().flat_map(|d| walkdir::WalkDir::new(d).into_iter().filter_map(|e| e.ok())) {
         if !e.file_type().is_file() { continue; }
         let Ok(b) = fs::read(e.path()) else { continue };
         for c in re.captures_iter(&b) {
@@ -878,6 +1148,9 @@ fn source_scopes(claimed: &std::collections::HashSet<String>) -> Vec<Value> {
         chats.sort_by_key(|c| std::cmp::Reverse(c["last"].as_u64().unwrap_or(0)));
         json!({
             "acct": format!("source:{}", kind), "org": "source", "kind": "source",
+            // a source belongs to no profile: these chats are on the machine,
+            // not in anybody's account, which is the whole point of listing them
+            "root": "", "rootLabel": "",
             "source": kind, "sourceName": names.get(&kind).copied().unwrap_or("Sessions"),
             "chats": chats, "deleted": [], "connectors": {},
             "isCurrent": false, "label": "", "profile": Value::Null
@@ -1423,6 +1696,7 @@ pub fn cursor_scope() -> Option<Value> {
     let prof = cursor_profile().unwrap_or(Value::Null);
     Some(json!({
         "acct": "source:cursor", "org": "source", "kind": "source",
+        "root": "", "rootLabel": "",
         "source": "cursor", "sourceName": "Cursor",
         "chats": list, "deleted": [], "connectors": {},
         "isCurrent": !prof.is_null(), "label": "", "profile": prof
@@ -1872,17 +2146,21 @@ use cursor::transcript_lines;
 
 /// Every <account>/<org> scope under the sessions root, found by walking the
 /// directory rather than by pattern matching. Returns (account, org, dir).
-fn scopes_on_disk() -> Vec<(String, String, PathBuf)> {
+/// Every account folder in every root: the root it was found in, the account,
+/// the org, and the folder itself.
+fn scopes_on_disk() -> Vec<(Root, String, String, PathBuf)> {
     let mut out = vec![];
-    let root = PathBuf::from(sess());
-    let Ok(l1) = fs::read_dir(&root) else { return out };
-    for a in l1.flatten() {
-        if !a.path().is_dir() { continue; }
-        let acct = a.file_name().to_string_lossy().to_string();
-        let Ok(l2) = fs::read_dir(a.path()) else { continue };
-        for o in l2.flatten() {
-            if !o.path().is_dir() { continue; }
-            out.push((acct.clone(), o.file_name().to_string_lossy().to_string(), o.path()));
+    for root in roots() {
+        let Ok(l1) = fs::read_dir(PathBuf::from(sess_in(&root.path))) else { continue };
+        for a in l1.flatten() {
+            if !a.path().is_dir() { continue; }
+            let acct = a.file_name().to_string_lossy().to_string();
+            let Ok(l2) = fs::read_dir(a.path()) else { continue };
+            for o in l2.flatten() {
+                if !o.path().is_dir() { continue; }
+                out.push((root.clone(), acct.clone(),
+                          o.file_name().to_string_lossy().to_string(), o.path()));
+            }
         }
     }
     out
@@ -1914,7 +2192,7 @@ fn list_dir(path: &str, take: usize) -> Value {
 fn diagnostics() -> Value {
     let scopes = scopes_on_disk();
     let mut records = 0usize;
-    for (_, _, dir) in &scopes {
+    for (_, _, _, dir) in &scopes {
         if let Ok(rd) = fs::read_dir(dir) {
             records += rd.flatten().filter(|e| {
                 let n = e.file_name().to_string_lossy().to_string();
@@ -1928,6 +2206,7 @@ fn diagnostics() -> Value {
         "sessionsList": list_dir(&sess(), 8),
         "claudeDir": claude_dir(),
         "claudeDirProbe": probe(&claude_dir()),
+        "roots": location_list(),
         "appdataList": list_dir(&std::env::var("APPDATA")
                         .unwrap_or_else(|_| format!("{}/AppData/Roaming", home())), 40),
         "scopesFound": scopes.len(),
@@ -1948,22 +2227,32 @@ fn diagnostics() -> Value {
 #[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn scan() -> Value {
     let cur = read_json(&cfg()).and_then(|c| c["lastKnownAccountUuid"].as_str().map(String::from));
+    // Each profile is signed into its own account, so "the one you are signed
+    // into" is a question per root, not per machine.
+    let cur_in: std::collections::HashMap<String, String> = roots().iter().filter_map(|r| {
+        let who = read_json(&cfg_in(&r.path))?["lastKnownAccountUuid"].as_str()?.to_string();
+        Some((r.id.clone(), who))
+    }).collect();
     let labs = labels();
     let profs = profiles();
     let mut scopes: std::collections::BTreeMap<String, Value> = Default::default();
     // every transcript some account already answers for; the rest are sources
     let mut claimed: std::collections::HashSet<String> = Default::default();
 
-    let touch = |scopes: &mut std::collections::BTreeMap<String, Value>, acct: &str, org: &str| {
-        scopes.entry(format!("{}|{}", acct, org)).or_insert_with(|| json!({
+    let touch = |scopes: &mut std::collections::BTreeMap<String, Value>,
+                 root: &Root, acct: &str, org: &str| {
+        scopes.entry(format!("{}|{}|{}", root.id, acct, org)).or_insert_with(|| json!({
             "acct": acct, "org": org, "chats": [], "deleted": [],
-            "connectors": {}, "isCurrent": cur.as_deref() == Some(acct),
+            "root": root.id, "rootPath": root.path, "rootLabel": root.label,
+            "rootBuiltin": root.builtin,
+            "connectors": {},
+            "isCurrent": cur_in.get(&root.id).map(String::as_str) == Some(acct),
             "label": labs[acct].as_str().unwrap_or(""),
             "profile": if profs[acct].is_null() { Value::Null } else { profs[acct].clone() }
         }));
     };
 
-    for (acct, org, dir) in scopes_on_disk() {
+    for (root, acct, org, dir) in scopes_on_disk() {
         let Ok(entries) = fs::read_dir(&dir) else { continue };
         for e in entries.flatten() {
             let p = e.path();
@@ -1971,8 +2260,8 @@ fn scan() -> Value {
             if !(name.starts_with("local_") && name.ends_with(".json")) { continue; }
             let (acct, org) = (acct.clone(), org.clone());
             let Some(rec) = read_json(&p.to_string_lossy()) else { continue };
-            touch(&mut scopes, &acct, &org);
-            let key = format!("{}|{}", acct, org);
+            touch(&mut scopes, &root, &acct, &org);
+            let key = format!("{}|{}|{}", root.id, acct, org);
             let tr = transcripts_for(&rec);
             for t in &tr { if let Some(i) = t["id"].as_str() { claimed.insert(i.to_string()); } }
             let bytes: u64 = tr.iter().map(|t| t["size"].as_u64().unwrap_or(0) + t["subBytes"].as_u64().unwrap_or(0)).sum();
@@ -2007,17 +2296,17 @@ fn scan() -> Value {
             }
         }
     }
-    for (acct, org, dir) in scopes_on_disk() {
+    for (root, acct, org, dir) in scopes_on_disk() {
         let Ok(entries) = fs::read_dir(&dir) else { continue };
         for e in entries.flatten() {
             let p = e.path();
             let base = e.file_name().to_string_lossy().to_string();
             if !base.starts_with("deleted_") { continue; }
             let (acct, org) = (acct.clone(), org.clone());
-            touch(&mut scopes, &acct, &org);
+            touch(&mut scopes, &root, &acct, &org);
             let short = base.trim_start_matches("deleted_").to_string();
             let when: Option<u64> = fs::read_to_string(&p).ok().and_then(|s| s.trim().parse().ok());
-            let key = format!("{}|{}", acct, org);
+            let key = format!("{}|{}|{}", root.id, acct, org);
             scopes.get_mut(&key).unwrap()["deleted"].as_array_mut().unwrap()
                 .push(json!({ "id": format!("local_{}", short), "when": when,
                               "path": p.to_string_lossy() }));
@@ -2052,6 +2341,7 @@ fn scan() -> Value {
     if let Some(c) = cursor_scope() { list.push(c); }
     json!({ "scopes": list, "current": cur, "appRunning": app_running(),
             "cursorRunning": cursor_running(),
+            "locations": location_list(),
             "vault": vault(), "exportDir": last_export_dir(),
             "version": env!("CARGO_PKG_VERSION"),
             "paths": { "sessions": sess(), "projects": proj(), "home": home() },
@@ -2141,9 +2431,7 @@ fn chat_parts(path: &str) -> Result<(Value, Vec<Value>), String> {
         return Ok((d["rec"].clone(), vec![]));
     }
     if under(&proj(), path) && path.ends_with(".jsonl") { return source_parts(path); }
-    if !under(&sess(), path) {
-        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
-    }
+    root_of(path)?;
     let rec = read_json(path).ok_or("chat unreadable")?;
     let tr = transcripts_for(&rec);
     Ok((rec, tr))
@@ -2268,15 +2556,24 @@ async fn export_chat(app: tauri::AppHandle, path: String, fmt: String, ask: bool
 
 #[cfg_attr(target_os = "windows", tauri::command(async))]
 #[cfg_attr(not(target_os = "windows"), tauri::command)]
-fn copy_chat(path: String, acct: String, org: String, mv: bool) -> Result<Value, String> {
-    guard()?;
-    if !under(&sess(), &path) {
-        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
-    }
+fn copy_chat(path: String, acct: String, org: String, mv: bool, root: Option<String>)
+    -> Result<Value, String>
+{
+    let src = root_of(&path)?;
+    // No root named means the account is in the same profile as the chat, which
+    // is every copy on a machine nobody has added a folder on.
+    let dst = match root.as_deref().filter(|r| !r.is_empty()) {
+        None => src.clone(),
+        Some(id) => root_by_id(id).ok_or("Ferry is no longer reading that folder")?,
+    };
+    // A move takes the record out of the source as well, so both ends have to
+    // be free of a Claude that could put it back.
+    if mv { guard_in(&src)?; }
+    guard_in(&dst)?;
     let rec = read_json(&path).ok_or("source unreadable")?;
     let sid = rec["sessionId"].as_str().ok_or("no sessionId")?.to_string();
     let short = sid.trim_start_matches("local_").to_string();
-    let dst_dir = format!("{}/{}/{}", sess(), acct, org);
+    let dst_dir = format!("{}/{}/{}", sess_in(&dst.path), acct, org);
     fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
     let dst = format!("{}/{}.json", dst_dir, sid);
 
@@ -2324,10 +2621,7 @@ fn relink(src: &str, dst: &str) -> (u64, u64) {
 /// transcript the chat is made of has to be findable under the new name too.
 #[tauri::command]
 async fn set_folder(app: tauri::AppHandle, path: String, folder: Option<String>) -> Result<Value, String> {
-    guard()?;
-    if !under(&sess(), &path) {
-        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
-    }
+    guard_in(&root_of(&path)?)?;
     let mut rec = read_json(&path).ok_or("chat unreadable")?;
     let was = rec["cwd"].as_str().unwrap_or("").to_string();
 
@@ -2411,8 +2705,14 @@ fn template_record(dir: &str) -> Option<Value> {
 /// The transcript is not touched - the session stays resumable from the CLI.
 #[cfg_attr(target_os = "windows", tauri::command(async))]
 #[cfg_attr(not(target_os = "windows"), tauri::command)]
-fn import_session(path: String, acct: String, org: String) -> Result<Value, String> {
-    guard()?;
+fn import_session(path: String, acct: String, org: String, root: Option<String>)
+    -> Result<Value, String>
+{
+    let dst = match root.as_deref().filter(|r| !r.is_empty()) {
+        None => primary_root(),
+        Some(id) => root_by_id(id).ok_or("Ferry is no longer reading that folder")?,
+    };
+    guard_in(&dst)?;
     // A Cursor chat has no transcript to point at - its conversation lives in
     // Cursor's database - so one is written first, and from there it is an
     // ordinary import. Nearby's receive (share.rs) is the other place Ferry
@@ -2422,7 +2722,7 @@ fn import_session(path: String, acct: String, org: String) -> Result<Value, Stri
         Some(cid) => {
             let chat = cursor_chat(cid).ok_or("no such Cursor chat")?;
             let p = cursor_write_transcript(&chat)?;
-            let out = import_session_at(&p, &acct, &org)?;
+            let out = import_session_at(&p, &acct, &org, &dst)?;
             // Cursor already named the conversation; keep its name over the
             // first line of the first prompt
             if let Some(t) = chat["title"].as_str() {
@@ -2438,7 +2738,7 @@ fn import_session(path: String, acct: String, org: String) -> Result<Value, Stri
             return Ok(out);
         }
     };
-    import_session_at(&path, &acct, &org)
+    import_session_at(&path, &acct, &org, &dst)
 }
 
 /// Convert a Claude chat into a Cursor conversation. The JSONL stays; Cursor
@@ -2457,7 +2757,7 @@ fn export_to_cursor(path: String) -> Result<Value, String> {
 /// The import itself, once there is a transcript to import. Kept apart from the
 /// command so a Cursor chat, whose transcript has only just been written, takes
 /// the very same path as one that was always there.
-fn import_session_at(path: &str, acct: &str, org: &str) -> Result<Value, String> {
+fn import_session_at(path: &str, acct: &str, org: &str, dst: &Root) -> Result<Value, String> {
     if !(under(&proj(), path) && path.ends_with(".jsonl")) {
         return Err(format!("path is outside the projects folder\n  path: {}\n  root: {}", path, proj()));
     }
@@ -2465,7 +2765,7 @@ fn import_session_at(path: &str, acct: &str, org: &str) -> Result<Value, String>
     let cwd = info["cwd"].as_str().unwrap_or("");
     if cwd.is_empty() { return Err("this transcript does not say which folder it ran in".into()); }
     let sid = Path::new(path).file_stem().ok_or("no session id")?.to_string_lossy().to_string();
-    let dst_dir = format!("{}/{}/{}", sess(), acct, org);
+    let dst_dir = format!("{}/{}/{}", sess_in(&dst.path), acct, org);
     if !Path::new(&dst_dir).is_dir() { return Err("that account has no folder on this machine".into()); }
 
     // The id the chat keeps for good, derived from the session it already has:
@@ -2499,10 +2799,7 @@ fn import_session_at(path: &str, acct: &str, org: &str) -> Result<Value, String>
 #[cfg_attr(target_os = "windows", tauri::command(async))]
 #[cfg_attr(not(target_os = "windows"), tauri::command)]
 fn rename_chat(path: String, title: String) -> Result<Value, String> {
-    guard()?;
-    if !under(&sess(), &path) {
-        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
-    }
+    guard_in(&root_of(&path)?)?;
     let mut rec = read_json(&path).ok_or("chat unreadable")?;
     snapshot(&path, "rename");
     let t = if title.trim().is_empty() { "(untitled)".to_string() } else { title.trim().to_string() };
@@ -2513,10 +2810,7 @@ fn rename_chat(path: String, title: String) -> Result<Value, String> {
 
 #[tauri::command]
 async fn delete_chat(app: tauri::AppHandle, path: String) -> Result<Value, String> {
-    guard()?;
-    if !under(&sess(), &path) {
-        return Err(format!("path is outside the sessions folder\n  path: {}\n  root: {}", path, sess()));
-    }
+    guard_in(&root_of(&path)?)?;
     let rec = read_json(&path).ok_or("chat unreadable")?;
 
     {
@@ -2546,18 +2840,29 @@ async fn delete_chat(app: tauri::AppHandle, path: String) -> Result<Value, Strin
 
 #[cfg_attr(target_os = "windows", tauri::command(async))]
 #[cfg_attr(not(target_os = "windows"), tauri::command)]
-fn undelete_chat(acct: String, org: String, id: String) -> Result<Value, String> {
-    guard()?;
+fn undelete_chat(acct: String, org: String, id: String, root: Option<String>)
+    -> Result<Value, String>
+{
+    let dst = match root.as_deref().filter(|r| !r.is_empty()) {
+        None => primary_root(),
+        Some(r) => root_by_id(r).ok_or("Ferry is no longer reading that folder")?,
+    };
+    guard_in(&dst)?;
     let short = id.trim_start_matches("local_").to_string();
     let mut src: Option<PathBuf> = None;
-    if let Ok(p) = glob::glob(&format!("{}/*/*/{}.json", glob::Pattern::escape(&sess()), glob::Pattern::escape(&id))) {
-        for c in p.flatten() { src = Some(c); break; }
+    for r in roots() {
+        let g = format!("{}/*/*/{}.json", glob::Pattern::escape(&sess_in(&r.path)),
+                        glob::Pattern::escape(&id));
+        if let Ok(p) = glob::glob(&g) {
+            for c in p.flatten() { src = Some(c); break; }
+        }
+        if src.is_some() { break; }
     }
     if src.is_none() { src = archived_copy(&id); }
     let src = src.ok_or("no surviving copy in any account or the vault")?;
     let mut rec = read_json(&src.to_string_lossy()).ok_or("copy unreadable")?;
     if let Some(o) = rec.as_object_mut() { for k in ACCOUNT_SCOPED { o.remove(k); } }
-    let dir = format!("{}/{}/{}", sess(), acct, org);
+    let dir = format!("{}/{}/{}", sess_in(&dst.path), acct, org);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     fs::write(format!("{}/{}.json", dir, id), serde_json::to_string_pretty(&rec).unwrap())
         .map_err(|e| e.to_string())?;
@@ -2583,11 +2888,16 @@ fn run_vault() -> Result<Value, String> {
     fs::create_dir_all(&base).map_err(|e| e.to_string())?;
     let (mut recs, mut files, mut bytes) = (0u64, 0u64, 0u64);
 
-    if let Ok(paths) = glob::glob(&format!("{}/*/*/local_*.json", sess())) {
+    for root in roots() {
+        let Ok(paths) = glob::glob(&format!("{}/*/*/local_*.json", sess_in(&root.path))) else { continue };
         for p in paths.flatten() {
             let parts: Vec<String> = p.iter().map(|s| s.to_string_lossy().to_string()).collect();
             let acct = parts[parts.len()-3].clone();
-            let d = format!("{}/{}", base, acct);
+            // The same account can be signed in in two profiles with different
+            // chats in each, so the profile goes in the folder name. One level,
+            // because a restore looks for chats/<stamp>/<account>/<id>.json.
+            let d = if root.label.is_empty() { format!("{}/{}", base, acct) }
+                    else { format!("{}/{}-{}", base, slug(&root.label), acct) };
             let _ = fs::create_dir_all(&d);
             let name = p.file_name().unwrap().to_string_lossy().to_string();
             if fs::copy(&p, format!("{}/{}", d, name)).is_ok() { recs += 1; }
@@ -2636,8 +2946,15 @@ fn nearby_state() -> Value { share::state() }
 fn nearby_send(path: String, to: String) -> Result<Value, String> { share::send(path, to) }
 
 #[tauri::command]
-fn nearby_answer(accept: bool, acct: String, org: String, folder: Option<String>) -> Result<Value, String> {
-    share::answer(accept, acct, org, folder)
+fn nearby_answer(accept: bool, acct: String, org: String, folder: Option<String>,
+                 root: Option<String>) -> Result<Value, String> {
+    // the account picked on the card can be in any profile, so the chat has to
+    // land in that profile's folder and not simply in the one Claude is using
+    let sess = match root.as_deref().filter(|r| !r.is_empty()) {
+        None => None,
+        Some(id) => Some(sess_in(&root_by_id(id).ok_or("Ferry is no longer reading that folder")?.path)),
+    };
+    share::answer(accept, acct, org, folder, sess)
 }
 
 #[tauri::command]
@@ -2648,6 +2965,68 @@ fn nearby_cancel() -> Value { share::cancel() }
 
 #[tauri::command]
 fn nearby_dismiss() -> Value { share::dismiss() }
+
+/* ---------- locations ---------- */
+
+fn write_locations(all: &[Value]) -> Result<(), String> {
+    fs::create_dir_all(vault()).map_err(|e| e.to_string())?;
+    fs::write(locations_path(), serde_json::to_string_pretty(&json!(all)).unwrap())
+        .map_err(|e| e.to_string())
+}
+
+/// What each folder Ferry reads is, and how much is in it - so a folder that
+/// turns out to hold nothing says so, instead of looking as though it worked.
+fn location_list() -> Value {
+    let found = scopes_on_disk();
+    json!(roots().into_iter().map(|r| {
+        let mine: Vec<_> = found.iter().filter(|(x, ..)| x.id == r.id).collect();
+        let accts: std::collections::HashSet<&String> = mine.iter().map(|(_, a, ..)| a).collect();
+        let chats: usize = mine.iter().map(|(.., dir)| {
+            fs::read_dir(dir).map(|rd| rd.flatten().filter(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.starts_with("local_") && n.ends_with(".json")
+            }).count()).unwrap_or(0)
+        }).sum();
+        json!({ "id": r.id, "path": r.path, "label": r.label, "builtin": r.builtin,
+                "exists": Path::new(&r.path).is_dir(),
+                "accounts": accts.len(), "chats": chats })
+    }).collect::<Vec<_>>())
+}
+
+/// Reads every root to count what is in it, so on Windows it goes off the
+/// thread that draws, like the other commands that touch the disk.
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn locations() -> Value { location_list() }
+
+/// Read a Claude profile Ferry would not have found by itself - the folder a
+/// second account's window was started with, after --user-data-dir.
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn add_location(path: String) -> Result<Value, String> {
+    let path = checked_location(&path)?;
+    let mut all = stored_locations();
+    all.push(json!({ "path": path, "label": leaf(&path), "added": now_ms() as u64 }));
+    write_locations(&all)?;
+    Ok(json!({ "ok": true, "id": root_id(&path), "locations": location_list() }))
+}
+
+/// Forget a folder. Nothing in it is touched: the chats stay where Claude put
+/// them, and adding the folder again brings them back into the list.
+#[cfg_attr(target_os = "windows", tauri::command(async))]
+#[cfg_attr(not(target_os = "windows"), tauri::command)]
+fn remove_location(id: String) -> Result<Value, String> {
+    if root_by_id(&id).map(|r| r.builtin).unwrap_or(false) {
+        return Err("that is one of Claude's own folders; Ferry always reads it".into());
+    }
+    let before = stored_locations();
+    let after: Vec<Value> = before.iter()
+        .filter(|l| l["path"].as_str().map(|p| root_id(p) != id).unwrap_or(true))
+        .cloned().collect();
+    if after.len() == before.len() { return Err("Ferry is not reading that folder".into()); }
+    write_locations(&after)?;
+    Ok(json!({ "ok": true, "locations": location_list() }))
+}
 
 /// A folder on this machine, for a chat that arrives from one where its folder
 /// has a path that means nothing here.
@@ -2670,7 +3049,7 @@ fn main() {
             scan, chat_detail, chat_full, export_chat, copy_chat, import_session, export_to_cursor,
             set_folder, rename_chat, delete_chat, undelete_chat, set_label, run_vault, set_zoom,
             nearby, nearby_state, nearby_send, nearby_answer, nearby_confirm, nearby_cancel,
-            nearby_dismiss, pick_folder
+            nearby_dismiss, pick_folder, locations, add_location, remove_location
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch Ferry");
