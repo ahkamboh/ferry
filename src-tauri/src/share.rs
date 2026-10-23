@@ -68,6 +68,10 @@ pub struct Answer {
     pub acct: String,
     pub org: String,
     pub folder: Option<String>,
+    /// The claude-code-sessions folder of the profile the chosen account is in.
+    /// None means the one the app is using, which is what the tests point at a
+    /// temporary tree.
+    pub sess: Option<String>,
 }
 
 #[derive(Default)]
@@ -464,7 +468,8 @@ fn compare(ours: &str, theirs: &str) -> Result<Cmp, String> {
 fn commit(r: &Roots, stage: &str, offer: &Value, files: &[FileSpec], rec: &Value, a: &Answer)
           -> Result<Value, String> {
     if !safe_seg(&a.acct) || !safe_seg(&a.org) { return Err("pick an account on this machine".into()); }
-    let scope = format!("{}/{}/{}", r.sess, a.acct, a.org);
+    let sess_root = a.sess.as_deref().unwrap_or(&r.sess);
+    let scope = format!("{}/{}/{}", sess_root, a.acct, a.org);
     if !Path::new(&scope).is_dir() { return Err("that account has no folder on this machine".into()); }
     let main_id = &files[0].id;
     let claude_open = r.real && app_running();
@@ -941,7 +946,8 @@ pub fn stop() -> Value {
     };
     if let Some(s) = stop { s.store(true, Ordering::Relaxed); }
     if let Some(tx) = tx {
-        let _ = tx.send(Answer { accept: false, acct: String::new(), org: String::new(), folder: None });
+        let _ = tx.send(Answer { accept: false, acct: String::new(), org: String::new(),
+                                 folder: None, sess: None });
     }
     if let Some(d) = d {
         let _ = d.unregister(&full);
@@ -1153,9 +1159,12 @@ pub fn send(path: String, to: String) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
-pub fn answer(accept: bool, acct: String, org: String, folder: Option<String>) -> Result<Value, String> {
+pub fn answer(accept: bool, acct: String, org: String, folder: Option<String>,
+              sess_root: Option<String>) -> Result<Value, String> {
     if accept {
-        if !safe_seg(&acct) || !safe_seg(&org) || !Path::new(&format!("{}/{}/{}", sess(), acct, org)).is_dir() {
+        // the account picked on the card can be in any profile Ferry reads
+        let root = sess_root.clone().unwrap_or_else(sess);
+        if !safe_seg(&acct) || !safe_seg(&org) || !Path::new(&format!("{}/{}/{}", root, acct, org)).is_dir() {
             return Err("pick an account on this machine".into());
         }
         if let Some(f) = folder.as_deref().filter(|f| !f.trim().is_empty()) {
@@ -1165,7 +1174,8 @@ pub fn answer(accept: bool, acct: String, org: String, folder: Option<String>) -
     let mut g = st();
     if let Some(tx) = g.answer.take() {
         drop(g);
-        tx.send(Answer { accept, acct, org, folder }).map_err(|_| "that offer has already gone".to_string())?;
+        tx.send(Answer { accept, acct, org, folder, sess: sess_root })
+            .map_err(|_| "that offer has already gone".to_string())?;
         return Ok(json!({ "ok": true }));
     }
     // Still pairing: there is no offer yet, so declining means hanging up.
@@ -1345,7 +1355,8 @@ mod tests {
                                vault: format!("{root}/vault"), real: false },
                 pair: Box::new(|_: &Value, _: &str, _: Option<TcpStream>| true),
                 decide: Box::new(move |_: &Value, _: &Value, _: &str| Some(Answer {
-                    accept: true, acct: "acct-b".into(), org: "org-b".into(), folder: folder.clone() })),
+                    accept: true, acct: "acct-b".into(), org: "org-b".into(),
+                    folder: folder.clone(), sess: None })),
             };
             serve(s, &ctx)
         });
