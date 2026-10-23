@@ -209,7 +209,7 @@ python3 ferry-cli.py ui --demo                   # try it on example data</code>
   <h2>Questions</h2>
 
   <div class="q"><h3>Where does Claude Code store chat history?</h3>
-  <p>Two places. Per-account metadata under <code>Application&nbsp;Support/Claude/claude-code-sessions/</code> on macOS or <code>%APPDATA%\Claude\claude-code-sessions\</code> on Windows (<code>%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude-code-sessions\</code> if Claude came from the Microsoft Store), and the conversations themselves as JSONL files in <code>~/.claude/projects/</code>.</p></div>
+  <p>Two places. Per-account metadata under <code>Application&nbsp;Support/Claude/claude-code-sessions/</code> on macOS or <code>%APPDATA%\Claude\claude-code-sessions\</code> on Windows (<code>%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude-code-sessions\</code> if Claude came from the Microsoft Store, and <code>%LOCALAPPDATA%\Claude-Data\*\claude-code-sessions\</code> once a newer Claude has moved it there), and the conversations themselves as JSONL files in <code>~/.claude/projects/</code>.</p></div>
 
   <div class="q"><h3>I switched Claude accounts and my chats disappeared. Are they gone?</h3>
   <p>No. The transcripts are still on disk — only the per-account metadata changed. Ferry finds every account it can see and copies a chat into the one you're using now.</p></div>

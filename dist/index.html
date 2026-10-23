@@ -877,7 +877,8 @@ function diagPanel(){
                         :'<b class=bad>none</b>')+'</p>'
     +'<p style="margin-top:12px"><b>AccessDenied</b> means antivirus or Controlled Folder Access is '
     +'blocking an unsigned app from reading another app\'s data — add an exclusion for Ferry.exe. '
-    +(WIN?'<b>NotFound</b> means neither <code>%APPDATA%\\Claude</code> nor the Microsoft Store location '
+    +(WIN?'<b>NotFound</b> means none of <code>%LOCALAPPDATA%\\Claude-Data\\*</code>, <code>%APPDATA%\\Claude</code> '
+         +'and the Microsoft Store location '
          +'<code>%LOCALAPPDATA%\\Packages\\Claude_*\\LocalCache\\Roaming\\Claude</code> has a '
          +'<code>claude-code-sessions</code> folder, so the desktop app stores its data elsewhere '
          :'<b>NotFound</b> with no Claude folder above means the desktop app stores its data elsewhere ')
@@ -994,7 +995,9 @@ function drawList(){
       (c.source&&c.cwd?' title="'+esc(c.cwd)+'"':'')+'>'+
       (c.missing?'<span class=warnd title="transcript pruned"></span>':'')+
       '<span class=t>'+esc(c.title)+'</span><span class=n>'+(c.turns||0)+'</span></div>').join("")
-     :'<div class=empty style="padding:40px 10px">No match</div>')
+     // an account just signed into has no chats yet; that is not a search miss
+     :'<div class=empty style="padding:40px 10px">'+(s.chats.length?'No match'
+       :'No chats yet. Drag one here from another account.')+'</div>')
    +(s.deleted.length?'<div class=secl>deleted</div>'+s.deleted.map(d=>'<div class="ch dead">'+
       '<span class=t title="'+esc(d.id)+'">'+esc(d.title||d.id.slice(6,18))+'</span>'+
       '<button class="btn sm" onclick="undel(\''+d.id+'\')">Restore</button></div>').join(""):"");

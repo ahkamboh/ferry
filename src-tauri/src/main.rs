@@ -32,8 +32,9 @@ fn claude_dir() -> String { format!("{}/Library/Application Support/Claude", hom
 /// redirects %APPDATA%\Claude to
 /// %LOCALAPPDATA%\Packages\Claude_<publisher>\LocalCache\Roaming\Claude.
 /// Only processes inside the package see the redirect, so a standalone Ferry
-/// finds %APPDATA%\Claude empty. Look in both; if more than one has chats,
-/// take the one written to most recently.
+/// finds %APPDATA%\Claude empty. Newer builds have left both for
+/// %LOCALAPPDATA%\Claude-Data. Look in all of them; if more than one has
+/// chats, take the one written to most recently.
 #[cfg(target_os = "windows")]
 fn claude_dir() -> String {
     let cands = claude_dirs();
@@ -123,6 +124,7 @@ fn builtin_roots() -> Vec<String> { vec![claude_dir()] }
 /// hold chats, and until now only the newer of the two was read at all.
 fn builtin_label(p: &str) -> String {
     if cfg!(target_os = "windows") {
+        if norm_dir(p).contains("/claude-data/") { return "Claude-Data".into(); }
         if norm_dir(p).contains("/packages/claude_") { return "Microsoft Store".into(); }
         return "AppData".into();
     }
@@ -282,6 +284,32 @@ mod roots_tests {
         let sibling = if cfg!(windows) { "C:\\ClaudeAccounts\\Account3" } else { "/x/Account3" };
         assert!(super::clashing_root(&have, sibling).is_none(), "a sibling is fine");
     }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn the_folder_claude_moved_to_is_built_in_and_read_first() {
+        let base = std::env::temp_dir().join(format!("ferry-dirs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let s = |p: &std::path::Path| p.to_string_lossy().to_string();
+        let (appdata, local) = (base.join("Roaming"), base.join("Local"));
+        let moved = local.join("Claude-Data").join("claude_abc");
+        std::fs::create_dir_all(moved.join("claude-code-sessions")).unwrap();
+        std::fs::create_dir_all(local.join("Claude-Data").join("not-a-profile")).unwrap();
+        std::fs::create_dir_all(local.join("Packages").join("Claude_abc")).unwrap();
+
+        assert_eq!(super::claude_dirs_in(&s(&appdata), &s(&local)), vec![
+            s(&moved),
+            format!("{}\\Claude", s(&appdata)),
+            format!("{}\\LocalCache\\Roaming\\Claude", s(&local.join("Packages").join("Claude_abc"))),
+        ], "Claude-Data first, and only a folder there that is a profile");
+        assert_eq!(super::builtin_label(&s(&moved)), "Claude-Data");
+
+        // a machine Claude never moved reads exactly what it always did
+        std::fs::remove_dir_all(local.join("Claude-Data")).unwrap();
+        assert_eq!(super::claude_dirs_in(&s(&appdata), &s(&local))[0],
+                   format!("{}\\Claude", s(&appdata)));
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
 
 /// A folder someone can add: it has to be a Claude profile, and it must not
@@ -292,12 +320,17 @@ fn checked_location(p: &str) -> Result<String, String> {
     if !Path::new(&p).is_dir() { return Err(format!("no such folder: {p}")); }
     let have: Vec<String> = roots().iter().map(|r| r.path.clone()).collect();
     if let Some(clash) = clashing_root(&have, &p) { return Err(clash); }
-    if !Path::new(&sess_in(&p)).is_dir() && read_json(&cfg_in(&p)).is_none() {
+    if !is_profile(&p) {
         return Err("that folder is not a Claude profile: it has no claude-code-sessions \
                     folder and no config.json. Point Ferry at the folder Claude was \
                     started with, the one after --user-data-dir.".into());
     }
     Ok(p)
+}
+
+/// Either half of a profile is enough to recognise one.
+fn is_profile(p: &str) -> bool {
+    Path::new(&sess_in(p)).is_dir() || read_json(&cfg_in(p)).is_some()
 }
 
 /// A folder that is, holds, or sits inside one we already read. Any of the
@@ -643,15 +676,32 @@ fn app_running() -> bool {
         .output().map(|o| !o.stdout.is_empty()).unwrap_or(false)
 }
 /// Every folder a Windows Claude can keep its state in: a direct install's
-/// %APPDATA%\Claude, and the Microsoft Store build's
-/// %LOCALAPPDATA%\Packages\Claude_<publisher>\LocalCache\Roaming\Claude.
+/// %APPDATA%\Claude, the Microsoft Store build's
+/// %LOCALAPPDATA%\Packages\Claude_<publisher>\LocalCache\Roaming\Claude, and
+/// %LOCALAPPDATA%\Claude-Data\<install>, where newer builds move both of them
+/// - leaving only a `.user-data-left.<install>` file behind. Nothing else
+/// pointed Ferry there, so after that move every account was gone from it.
 #[cfg(target_os = "windows")]
 fn claude_dirs() -> Vec<String> {
     let appdata = std::env::var("APPDATA")
         .unwrap_or_else(|_| format!("{}/AppData/Roaming", home()));
     let local = std::env::var("LOCALAPPDATA")
         .unwrap_or_else(|_| format!("{}/AppData/Local", home()));
-    let mut cands = vec![format!("{}\\Claude", appdata)];
+    claude_dirs_in(&appdata, &local)
+}
+
+/// Kept apart from the environment so it can be tested on a made-up tree.
+/// Claude-Data comes first: on a machine with no chats anywhere yet, that is
+/// the folder Claude writes to next. Only a folder that is a profile counts,
+/// so nothing else Claude keeps there turns into a location.
+#[cfg(target_os = "windows")]
+fn claude_dirs_in(appdata: &str, local: &str) -> Vec<String> {
+    let mut cands: Vec<String> = fs::read_dir(format!("{}\\Claude-Data", local))
+        .map(|rd| rd.flatten().map(|e| e.path().display().to_string())
+             .filter(|p| is_profile(p)).collect::<Vec<String>>())
+        .unwrap_or_default();
+    cands.sort();
+    cands.push(format!("{}\\Claude", appdata));
     if let Ok(rd) = fs::read_dir(format!("{}\\Packages", local)) {
         let mut pkgs: Vec<String> = rd.flatten()
             .filter(|e| e.file_name().to_string_lossy().starts_with("Claude_"))
@@ -2325,6 +2375,16 @@ fn scan() -> Value {
                 d["title"] = json!(t);
             }
         }
+    }
+    // An account is listed before it has a chat. Signing in is what makes its
+    // folder, and an account with nothing in it yet is just where a chat gets
+    // copied to - left out, it could not be picked as the destination at all.
+    // Once per profile, so an org folder that stays empty beside one with
+    // chats adds no second row.
+    for (root, acct, org, _) in scopes_on_disk() {
+        let mine = format!("{}|{}|", root.id, acct);
+        if scopes.keys().any(|k| k.starts_with(&mine)) { continue; }
+        touch(&mut scopes, &root, &acct, &org);
     }
     let mut list: Vec<Value> = scopes.into_values().collect();
     for s in list.iter_mut() {

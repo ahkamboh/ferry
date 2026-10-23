@@ -32,13 +32,24 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 HOME  = (os.environ.get("USERPROFILE") or os.path.expanduser("~")) \
         if sys.platform == "win32" else os.path.expanduser("~")
 
+def is_profile(p):
+    """Either half of a profile is enough to recognise one."""
+    return (os.path.isdir(os.path.join(p, "claude-code-sessions"))
+            or os.path.exists(os.path.join(p, "config.json")))
+
 def claude_dirs_windows():
     """Every folder a Windows Claude can keep its state in: a direct install's
-    %APPDATA%\\Claude, and the Store build's
-    %LOCALAPPDATA%\\Packages\\Claude_<publisher>\\LocalCache\\Roaming\\Claude."""
+    %APPDATA%\\Claude, the Store build's
+    %LOCALAPPDATA%\\Packages\\Claude_<publisher>\\LocalCache\\Roaming\\Claude, and
+    %LOCALAPPDATA%\\Claude-Data\\<install>, where newer builds move both of them,
+    leaving only a .user-data-left.<install> file behind. Claude-Data comes
+    first - with no chats anywhere yet, it is where Claude writes next - and
+    only a folder there that is a profile counts."""
     appdata = os.environ.get("APPDATA", os.path.join(HOME, "AppData", "Roaming"))
     local   = os.environ.get("LOCALAPPDATA", os.path.join(HOME, "AppData", "Local"))
-    return [os.path.join(appdata, "Claude")] + sorted(glob.glob(
+    moved = sorted(p for p in glob.glob(os.path.join(local, "Claude-Data", "*"))
+                   if is_profile(p))
+    return moved + [os.path.join(appdata, "Claude")] + sorted(glob.glob(
         os.path.join(local, "Packages", "Claude_*", "LocalCache", "Roaming", "Claude")))
 
 def claude_dir_windows():
@@ -108,6 +119,7 @@ def builtin_label(p):
     """A built-in folder that is not the one in use still has to be told apart
     from the one that is."""
     if sys.platform == "win32":
+        if "/claude-data/" in norm_dir(p): return "Claude-Data"
         return "Microsoft Store" if "/packages/claude_" in norm_dir(p) else "AppData"
     return os.path.basename(p.rstrip("/\\"))
 
@@ -175,7 +187,7 @@ def checked_location(p):
     if not os.path.isdir(p): raise RuntimeError(f"no such folder: {p}")
     clash = clashing_root([r["path"] for r in roots()], p)
     if clash: raise RuntimeError(clash)
-    if not os.path.isdir(sess_in(p)) and not os.path.exists(cfg_in(p)):
+    if not is_profile(p):
         raise RuntimeError("that folder is not a Claude profile: it has no "
                            "claude-code-sessions folder and no config.json. Point ferry "
                            "at the folder Claude was started with, the one after "
@@ -188,8 +200,11 @@ def location_list():
     out = []
     for r in roots():
         recs = glob.glob(f"{glob.escape(sess_in(r['path']))}/*/*/local_*.json")
+        # an account counts from its folder, as in the list, not from its chats
+        dirs = glob.glob(f"{glob.escape(sess_in(r['path']))}/*/*/")
         out.append(dict(r, exists=os.path.isdir(r["path"]),
-                        accounts=len({scope_of(f)[0] for f in recs}), chats=len(recs)))
+                        accounts=len({scope_of(os.path.join(d, "-"))[0] for d in dirs}),
+                        chats=len(recs)))
     return out
 
 def add_location(path):
@@ -756,6 +771,15 @@ def scan():
         for d in sc["deleted"]:
             t = titles.get(d["id"]) or archived_title(d["id"])
             if t: d["title"] = t
+    # An account is listed before it has a chat. Signing in is what makes its
+    # folder, and an account with nothing in it yet is just where a chat gets
+    # copied to. Once per profile, so an org folder that stays empty beside one
+    # with chats adds no second row.
+    for r in RS:
+      for d in sorted(glob.glob(f"{glob.escape(sess_in(r['path']))}/*/*/")):
+        acct, org = scope_of(os.path.join(d, "-"))
+        if any(k.startswith(f"{r['id']}|{acct}|") for k in scopes): continue
+        scopes[f"{r['id']}|{acct}|{org}"] = blank(r, acct, org)
     for s in scopes.values():
         s["chats"].sort(key=lambda c: c["last"] or 0, reverse=True)
         s["deleted"].sort(key=lambda d: d["when"] or 0, reverse=True)

@@ -265,7 +265,7 @@ The archive is yours, outside anything Claude Code manages. Once a chat is in it
 
 Claude keeps its state in one folder per *profile*, not one per machine. A second window started with `--user-data-dir` gets its own, which is how a second account stays signed in beside the first — and every chat in it is invisible to anything reading only the default folder.
 
-Ferry finds the built-in folders by itself: on macOS `~/Library/Application Support/Claude`, on Windows both `%APPDATA%\Claude` and the Microsoft Store container. Any other folder has to be pointed at once, under **locations** in the sidebar — or from the CLI:
+Ferry finds the built-in folders by itself: on macOS `~/Library/Application Support/Claude`, on Windows `%LOCALAPPDATA%\Claude-Data\*`, `%APPDATA%\Claude` and the Microsoft Store container. An account is listed as soon as Claude has made its folder — signing in does that — so a new one can be the destination before it has a chat of its own. Any other folder has to be pointed at once, under **locations** in the sidebar — or from the CLI:
 
 ```bash
 ./ferry-cli.py locations                                  # the folders Ferry reads
@@ -344,8 +344,10 @@ would apply.
 The Microsoft Store build of Claude runs in a container that redirects `%APPDATA%\Claude` to
 `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude`. Only Claude sees the redirect,
 so anything outside it — Ferry, or a terminal you opened yourself — finds `%APPDATA%\Claude`
-empty. Ferry checks both and uses the one with the newest chats. If it still comes back empty,
-the window lists every path it looked at; include that in an issue.
+empty. Newer builds of Claude move their data out of both, to `%LOCALAPPDATA%\Claude-Data\<install>`,
+and leave only a `.user-data-left.<install>` file where it was. Ferry checks all of them and uses
+the one with the newest chats. If it still comes back empty, the window lists every path it
+looked at; include that in an issue.
 
 **I keep a second account signed in with `--user-data-dir`. Ferry doesn't list it.**
 That profile has a folder of its own, and Ferry only reads the built-in ones until it is told otherwise. Add the folder under **locations** in the sidebar, or `./ferry-cli.py locations add <folder>`, and its accounts appear with the rest.
