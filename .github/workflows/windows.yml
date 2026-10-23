@@ -73,7 +73,13 @@ jobs:
           path: dist-win/*
           if-no-files-found: error
 
+      # Only from the branches releases are cut on. The version in
+      # tauri.conf.json is whatever the branch carries, so a test build from a
+      # feature branch - this workflow's whole reason for existing - would find
+      # the release of the version it had not bumped yet and --clobber the
+      # published installers with an unreleased build.
       - name: Publish to GitHub release
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
