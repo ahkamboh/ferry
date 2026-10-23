@@ -261,6 +261,8 @@ Reading SQLite from Rust means bundling it, which cost about 1 MB (1.4.0); Nearb
 
 The archive is yours, outside anything Claude Code manages. Once a chat is in it, deletion becomes cosmetic — restore it into whichever account you want.
 
+Every `<timestamp>` here is local time as `yyyymmdd-hhmmss`. The app and the CLI write into the same vault, and a restore picks the newest copy by comparing those names, so both write the same shape on both platforms.
+
 ## More than one Claude profile
 
 Claude keeps its state in one folder per *profile*, not one per machine. A second window started with `--user-data-dir` gets its own, which is how a second account stays signed in beside the first — and every chat in it is invisible to anything reading only the default folder.
